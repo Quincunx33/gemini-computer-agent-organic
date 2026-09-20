@@ -1,0 +1,18 @@
+TOOLS=[
+    {"name":"run_command","description":"Run a shell command in the configured workspace. Risky commands need confirmation.","parameters":{"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string"}},"required":["command"]}},
+    {"name":"read_file","description":"Read a text file inside the workspace.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
+    {"name":"write_file","description":"Write a text file inside the workspace after inspecting it.","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}},
+    {"name":"self_update","description":"Update a workspace source file atomically, create a backup, and roll back Python syntax failures.","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}},
+    {"name":"list_directory","description":"List workspace files.","parameters":{"type":"object","properties":{"path":{"type":"string"}}}},
+    {"name":"verify_python","description":"Compile a Python file in the workspace and report syntax errors.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
+    {"name":"platform_info","description":"Report host OS, GUI backend, and available control capabilities.","parameters":{"type":"object","properties":{}}},
+    {"name":"open_app","description":"Open a URL, file, or application using the host OS launcher.","parameters":{"type":"object","properties":{"target":{"type":"string"}},"required":["target"]}},
+    {"name":"list_processes","description":"List running processes on the host.","parameters":{"type":"object","properties":{}}},
+    {"name":"terminate_process","description":"Terminate a process after explicit destructive-action confirmation.","parameters":{"type":"object","properties":{"pid":{"type":"integer"}},"required":["pid"]}},
+    {"name":"gui_capabilities","description":"Report GUI driver and OCR availability.","parameters":{"type":"object","properties":{}}},
+    {"name":"screenshot","description":"Capture the current desktop screen to a workspace image file.","parameters":{"type":"object","properties":{"path":{"type":"string"}}}},
+    {"name":"ocr","description":"Extract text from a workspace screenshot using the optional Tesseract engine.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
+    {"name":"mouse_click","description":"Click at desktop coordinates after explicit confirmation.","parameters":{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"clicks":{"type":"integer"}},"required":["x","y"]}},
+    {"name":"type_text","description":"Type text into the active window after explicit confirmation.","parameters":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}},
+    {"name":"press_key","description":"Press a keyboard key after explicit confirmation.","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"]}},
+]

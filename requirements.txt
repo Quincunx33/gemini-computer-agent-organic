@@ -1,0 +1,2 @@
+# No third-party runtime dependencies.
+# The agent uses Python's standard library, including urllib for Gemini REST calls.
