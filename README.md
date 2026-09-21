@@ -1,89 +1,167 @@
-# Gemini Computer Agent
+<div align="center">
 
-A modular, local-first Python terminal agent that uses the Google Gemini REST API to plan and execute controlled computer actions. It follows **Observe → Plan → Act → Observe → Verify** and never hides commands or silently escalates privileges.
+# genagent
 
-## Features
+### A grounded, local-first computer agent powered by Google Gemini
 
-The current implementation includes Gemini REST integration, bounded agent loop, terminal execution with timeout and structured results, workspace-confined filesystem operations, risk classification and confirmation for privileged/destructive commands, SQLite memory, a standard-library terminal UI, optional Playwright browser helpers, optional PyAutoGUI GUI helpers, process and Git helpers, audit-friendly logs, and unit tests. The core application has **no third-party runtime dependency**.
+**Observe → Plan → Act → Verify**
 
-Security hardening includes workspace-safe command cwd resolution, confirmation-required download-to-shell and credential-file reads, secret redaction, configurable file/output limits, bounded Gemini API retries, and a `verify_python` tool. Reusable agent instructions are included in `skills/` as `SKILL.md` files for safety, verification, and tool extension workflows.
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![Gemini](https://img.shields.io/badge/AI-Google%20Gemini-8E75B2?style=for-the-badge&logo=googlegemini&logoColor=white)](https://ai.google.dev/)
+[![Tests](https://img.shields.io/badge/tests-27%20passing-22C55E?style=for-the-badge)](tests/)
+[![Security](https://img.shields.io/badge/safety-bounded%20%26%20audited-F59E0B?style=for-the-badge)](#safety-first)
 
-Cross-platform control now includes `platform_info`, `open_app`, `list_processes`, and confirmation-protected `terminate_process`. Linux, macOS, Windows, and Termux are detected at runtime. GUI capability is reported rather than assumed: desktop input requires the host OS accessibility/display permissions, while iOS remains a limited shell/Shortcuts target and cannot expose arbitrary system GUI control.
+*A transparent terminal agent that can inspect a workspace, choose controlled tools, recover from failures, and verify its work without silently escalating privileges.*
 
-## Organic agent behavior
+</div>
 
-The core loop is designed to behave like a grounded collaborator rather than a fixed command script. Each task is handled through an adaptive **observe → plan → act → verify** cycle. The agent receives relevant local memories as optional hints, chooses the smallest useful next action, preserves structured observations between steps, detects repeated tool calls, and asks the model to recover instead of looping blindly. Completed tasks are stored as redacted summaries so later requests can preserve continuity without storing common credentials or tokens.
+<br />
 
-“Organic” does not mean unrestricted autonomy: the workspace boundary, bounded step count, command timeouts, explicit confirmation for privileged/destructive actions, and audit-friendly redaction remain active. The agent does not expose hidden chain-of-thought; it reports concise reasons, concrete actions, verification results, and blockers.
+<p align="center">
+  <img src="docs/architecture.png" alt="genagent architecture diagram" width="100%" />
+</p>
 
-## Installation
+## Why genagent?
+
+Most automation scripts follow a fixed sequence. **genagent** instead maintains a bounded feedback loop: it observes the current state, asks Gemini to select the smallest useful next action, executes that action through a typed tool, and verifies the result. When a command fails or a tool call repeats without progress, the agent records the observation and asks the model to recover rather than blindly retrying.
+
+The agent is designed for local development and system tasks where the user should be able to see what is happening. Commands, permissions, workspace boundaries, timeouts, audit records, and verification are explicit parts of the system—not hidden implementation details.
+
+## Highlights
+
+- **Gemini-powered planning** through the official REST API, with model fallback and structured tool-call normalization.
+- **Bounded autonomy** with configurable step limits, command timeouts, API retries, cancellation, and repeated-call detection.
+- **Safety-first execution** with risk classification, exact-command confirmation for privileged or destructive actions, path validation, and secret redaction.
+- **Workspace-aware tools** for terminal commands, filesystem operations, Python verification, processes, Git, browser adapters, and optional desktop GUI control.
+- **Persistent continuity** through redacted SQLite task summaries and resumable task state.
+- **Verification after change** through syntax checks, atomic self-updates, backups, and rollback when a Python update is invalid.
+- **Cross-platform capability reporting** for Linux, macOS, Windows, Termux, and restricted mobile environments.
+- **Standard-library core** with no required third-party runtime dependency.
+
+## Quick start
+
+### 1. Clone and create an environment
 
 ```bash
-git clone <repo>
-cd gemini-computer-agent
+git clone https://github.com/Quincunx33/genagent.git
+cd genagent
 python3 -m venv .venv
 source .venv/bin/activate
-# requirements.txt is intentionally empty of third-party packages
-python -m unittest discover -s tests -p 'test_*.py'
-python setup.py
+```
+
+On Windows PowerShell, activate the environment with `.venv\\Scripts\\Activate.ps1`.
+
+### 2. Configure Gemini
+
+```bash
+cp .env.example .env
+```
+
+Set `GEMINI_API_KEY` in `.env`. The file is ignored by Git and must never be committed.
+
+The default model order is:
+
+1. `gemini-3.6-flash`
+2. `gemini-flash-lite-latest`
+3. `gemini-3.6-flash`
+
+You can override the order with `GEMINI_MODEL` and `GEMINI_FALLBACK_MODELS`.
+
+### 3. Run the agent
+
+```bash
 python agent.py
 ```
 
-Browser and GUI helpers remain optional adapters. They require Playwright or PyAutoGUI only if those specific helpers are used; the core agent does not import them at startup.
+Example task:
 
-## Desktop GUI and OCR
-
-Run `python mobile_server.py --host 127.0.0.1 --port 8765` to start a token-protected local command bridge. `tools/gui_control.py` provides `screenshot`, `ocr`, `mouse_click`, `type_text`, and `press_key`. Install `pyautogui` only on a trusted desktop when mouse/keyboard control is needed; install the native `tesseract` executable when OCR is needed. The agent reports both capabilities instead of pretending they are available.
-
-## Mobile command client
-
-The bridge prints a one-time bearer token. Keep it private. From another trusted device or Termux shell, use:
-
-```bash
-python mobile_client.py http://HOST:8765 --token TOKEN --capabilities
-python mobile_client.py http://HOST:8765 --token TOKEN "Open the browser and inspect the project tests"
+```text
+Inspect this project, find the failing tests, make the smallest safe fix, run the test suite, and report what was verified.
 ```
 
-Keep the server bound to `127.0.0.1` unless a trusted LAN is required. If exposing it on a LAN, use `--host 0.0.0.0`, a long random token, firewall rules, and a private network. This is not an internet-facing service and does not bypass iOS sandbox restrictions.
+## Common commands
 
-## Production-hardening controls
+| Command | Purpose |
+| --- | --- |
+| `/help` | Show available commands. |
+| `/status` | Show model, workspace, and execution settings. |
+| `/tools` | List the available tools. |
+| `/model` | Show the active Gemini model. |
+| `/workspace` | Show the configured workspace. |
+| `/permissions` | Explain the permission policy. |
+| `/memory` | Review relevant stored task context. |
+| `/clear-memory` | Clear redacted agent memories. |
+| `/tasks` | List persisted tasks. |
+| `/resume TASK_ID` | Resume a paused task. |
+| `/exit` | Exit the agent. |
 
-The mobile bridge now enforces a per-client rate limit, a maximum request body, bearer-token authentication, JSONL audit logging with secret redaction, and HTTPS for every non-loopback bind. Create or obtain a certificate and private key, then run `python mobile_server.py --host 0.0.0.0 --certfile server.crt --keyfile server.key --token LONG_RANDOM_TOKEN`. The server refuses non-loopback HTTP. Review `AGENT_AUDIT_LOG`, `MOBILE_RATE_LIMIT`, `MOBILE_RATE_WINDOW`, and `MOBILE_MAX_BODY` before deployment.
+## Safety first
 
-## Configuration
+> **genagent never treats autonomy as permission to hide actions.** The user remains in control of privileged and destructive work.
 
-Run `python setup.py` once. It requests the API key with hidden terminal input and writes it to the local `.env` file with restrictive permissions; the key is never embedded in Python source, committed to Git, or stored in SQLite memory. The setup wizard configures this model order:
+The permission layer classifies actions as normal, low-risk, privileged, or destructive. Normal read-only inspection can run automatically. Privileged and destructive operations display the exact command and require an explicit confirmation. The agent does not bypass operating-system authentication, extract credentials, store API keys in memory, or implement CAPTCHA bypass, credential theft, stealth scraping, or unauthorized access.
 
-1. `gemini-3.6-flash` — current API-supported primary model, live-tested in this project.
-2. `gemini-flash-lite-latest` — fast fallback for lightweight planning and recovery.
-3. `gemini-3.6-flash` — compatibility fallback for the current model endpoint.
-
-The client automatically tries the next configured model if a model request fails. You can override `GEMINI_MODEL` and `GEMINI_FALLBACK_MODELS` in `.env`. `AGENT_WORKSPACE`, `MAX_AGENT_STEPS`, `MAX_RETRIES`, `COMMAND_TIMEOUT`, `REQUIRE_CONFIRMATION`, and `AGENT_DB` are also configurable. The workspace restriction prevents accidental writes outside the project unless a caller explicitly opts out at the tool layer.
-
-The client also normalizes JSON-encoded tool calls when a model returns a function call as plain text instead of a native function-call part, allowing the bounded agent loop to continue. Temporary Gemini `503 Service Unavailable` responses are retried and then reported cleanly without hiding the failure.
-
-The `self_update` tool lets the agent modify workspace source code after the user requests a fix. It writes atomically, keeps a timestamped copy under `.agent_backups/`, compiles Python files, and automatically restores the previous version when syntax validation fails. The agent should then run the test suite and report the change; self-update does not bypass the workspace boundary.
-
-## Commands
-
-`/help`, `/status`, `/tools`, `/model`, `/workspace`, `/permissions`, `/memory`, `/clear-memory`, `/tasks`, `/resume TASK_ID`, and `/exit` are available. Tasks are journaled in SQLite with their status, step, and conversation history. Normal input is treated as an agent task, for example: “Inspect this project, open the browser, list processes, and explain the first test failure.”
-
-## Safety model
-
-Normal and low-risk commands may run automatically. Privileged and destructive commands display the exact command and require the user to type `yes`. The agent has bounded steps and command timeouts, rejects unsafe filesystem paths, does not bypass OS authentication, does not store credentials, and does not implement CAPTCHA bypass, credential theft, stealth scraping, or unauthorized access. Review the command before approving it.
+The default workspace boundary prevents accidental writes outside the configured project. File sizes, output sizes, API retries, command duration, and total agent steps are configurable. Runtime databases, JSONL audit logs, command history, and secrets are local-only artifacts and are excluded by `.gitignore`.
 
 ## Architecture
 
-`agent.py` provides the UI; `agent_loop.py` coordinates bounded reasoning and tool calls; `gemini_client.py` isolates the Gemini REST API; `planner.py` defines structured tool schemas; `permissions.py` classifies risk; `tools/` contains execution adapters; `memory.py` persists non-secret task summaries; `state.py` tracks task history; and `tests/` contains isolated unit tests.
+The main modules have one responsibility each:
 
-## Development and tests
+- `agent.py` provides the interactive terminal UI and slash commands.
+- `agent_loop.py` coordinates the bounded observe-plan-act-verify cycle.
+- `gemini_client.py` isolates Gemini requests, retries, and tool-call parsing.
+- `planner.py` defines the structured tool schemas exposed to Gemini.
+- `permissions.py` classifies risk and handles confirmation.
+- `tools/` contains terminal, filesystem, process, Git, browser, GUI, and verification adapters.
+- `memory.py`, `state.py`, and `task_store.py` provide redacted continuity and resumable task state.
+- `security.py` handles secret redaction and audit protections.
+- `text_safety.py` prevents malformed Unicode from terminating terminal sessions on macOS and iPadOS boundaries.
+
+## Optional adapters
+
+The core agent runs with Python's standard library. Optional capabilities can be enabled only when needed:
+
+- **Browser automation:** install Playwright and its browser runtime for browser helpers.
+- **Desktop GUI:** install PyAutoGUI on a trusted desktop with the required accessibility/display permissions.
+- **OCR:** install the native `tesseract` executable.
+- **Mobile bridge:** run `python mobile_server.py --host 127.0.0.1 --port 8765`. The bridge requires a bearer token and should remain loopback-only unless a trusted private network, HTTPS, firewall rules, and a long random token are configured.
+
+## Configuration
+
+Configuration is loaded from environment variables or `.env`:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GEMINI_MODEL` | `gemini-3.6-flash` | Primary Gemini model. |
+| `GEMINI_FALLBACK_MODELS` | See `.env.example` | Comma-separated fallback models. |
+| `AGENT_WORKSPACE` | Current directory | Filesystem boundary for the agent. |
+| `MAX_AGENT_STEPS` | `50` | Maximum steps in one task. |
+| `COMMAND_TIMEOUT` | `120` | Maximum seconds for a command. |
+| `MAX_RETRIES` | `3` | Recovery retry limit. |
+| `REQUIRE_CONFIRMATION` | `true` | Require confirmation for protected actions. |
+| `AGENT_DB` | User home directory | Local SQLite task state path. |
+| `AGENT_AUDIT_LOG` | User home directory | Local redacted JSONL audit path. |
+
+## Development
+
+Run the complete test suite with:
 
 ```bash
 python -m unittest discover -s tests -p 'test_*.py'
 ```
 
-Gemini calls should be mocked in tests. Do not run destructive tests against a real filesystem. Add new tools with typed, validated arguments, explicit safety behavior, structured results, and verification steps.
+The project includes regression coverage for command execution, timeout handling, filesystem safety, permissions, Gemini protocol normalization, memory redaction, mobile authentication, self-update rollback, task persistence, and Unicode surrogate handling. Do not run destructive tests against a real user filesystem.
 
-## Troubleshooting
+## Repository hygiene
 
-If Gemini is unavailable, confirm `.env` is present, the key is valid, and the selected model is available to your account. If a task is stopped at the step limit, split it into smaller tasks. If a file is rejected, set `AGENT_WORKSPACE` to the intended project root rather than disabling the safety boundary.
+The repository intentionally excludes `.env`, virtual environments, Python caches, SQLite databases, JSONL audit logs, command history, and local log files. Commit `.env.example` when configuration fields change, but never commit a real API key or runtime state.
+
+## License and status
+
+This project is an actively developed experimental agent framework. Review every proposed command before approving it, especially when the workspace or host system contains sensitive data.
+
+## References
+
+[1]: https://ai.google.dev/gemini-api/docs "Gemini API documentation"
+[2]: https://docs.python.org/3.11/library/venv.html "Python virtual environment documentation"
+[3]: https://docs.python.org/3.11/library/unittest.html "Python unittest documentation"
