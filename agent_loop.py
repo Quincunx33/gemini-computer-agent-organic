@@ -15,6 +15,7 @@ from tools.verification import verify_python
 from tools.control import platform_info, open_app, list_processes, terminate_process
 from tools.gui_control import gui_capabilities, screenshot, ocr, mouse_click, type_text, press_key
 from tools.self_update import self_update
+from text_safety import safe_text, safe_value
 
 
 class AgentLoop:
@@ -33,7 +34,28 @@ class AgentLoop:
         self.last_task_id: str | None = None
 
     def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        if name == "run_command": return run_command(**args)
+        from permissions import classify_command, Risk
+
+        # Determine if we should ask for confirmation based on action risk
+        requires_confirm = True
+        if name in ["list_directory", "read_file", "platform_info", "gui_capabilities"]:
+            requires_confirm = False
+        elif name == "run_command":
+            cmd_risk = classify_command(args.get("command", ""))
+            if cmd_risk == Risk.NORMAL:
+                requires_confirm = False
+
+        if requires_confirm:
+            print(safe_text(f"\n[PERMISSION REQUIRED] The agent wants to execute tool: '{name}' with arguments: {args}"))
+            confirm = input("Allow execution? [y/N]: ").strip().lower()
+            if confirm not in ['y', 'yes']:
+                print(safe_text(f"Execution of '{name}' was denied by the user."))
+                return {"error": f"Permission denied by user for tool: {name}"}
+        else:
+            # Quietly notify user of automatic tool execution
+            print(safe_text(f"\n[AUTO-EXECUTING] Running tool '{name}'..."))
+
+        if name == "run_command": return run_command(command=args.get("command"), cwd=args.get("cwd"), timeout=args.get("timeout"), approved=not requires_confirm)
         if name == "read_file": return {"content": read_file(args["path"])}
         if name == "write_file": return {"written": write_file(args["path"], args["content"])}
         if name == "self_update": return self_update(args["path"], args["content"])
@@ -129,20 +151,21 @@ This is step {state.step + 1} of a bounded run. Use an available tool if action 
                 recent_calls = recent_calls[-4:]
                 if len(recent_calls) >= 3 and len(set(recent_calls[-3:])) == 1:
                     message = {"error": "The same tool call was requested repeatedly without progress. Choose a different safe approach or explain the blocker."}
-                    self.output(f"[RESULT] {message}")
+                    self.output(safe_text(f"[RESULT] {message}"))
                     tool_results.append(message)
                     continue
                 name, args = call.get("name", ""), call.get("args", {})
-                self.output(f"[TOOL] {name} {args}")
+                self.output(safe_text(f"[TOOL] {name} {args}"))
                 try:
                     tool_result = self.execute(name, args)
                 except Exception as exc:
                     tool_result = {"error": str(exc)}
-                self.output(f"[RESULT] {str(tool_result)[:1000]}")
+                tool_result = safe_value(tool_result)
+                self.output(safe_text(f"[RESULT] {str(tool_result)[:1000]}"))
                 state.add("tool", {"tool": name, "args": args, "result": tool_result})
                 tool_results.append(tool_result)
 
-            previous_result = json.dumps(tool_results, ensure_ascii=False, default=str)[:12000]
+            previous_result = json.dumps(safe_value(tool_results), ensure_ascii=False, default=str)[:12000]
             self.store.save(task_id, task, "running", state.step, state.history)
 
         self.store.save(task_id, task, "paused", state.step, state.history)

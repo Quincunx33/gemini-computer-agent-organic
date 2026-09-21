@@ -3,3 +3,12 @@
 __pycache__/
 .pytest_cache/
 *.pyc
+
+# Local runtime state and private command/audit data
+*.sqlite
+*.sqlite3
+*.db
+*.jsonl
+*.log
+command-history*
+commands/

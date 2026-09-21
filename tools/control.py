@@ -37,7 +37,7 @@ def list_processes() -> dict[str, Any]:
     system = platform.system().lower()
     command = ["tasklist"] if system == "windows" else ["ps", "-eo", "pid,comm,args"]
     try:
-        result = subprocess.run(command, text=True, capture_output=True, timeout=settings.command_timeout)
+        result = subprocess.run(command, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=settings.command_timeout)
         return {"exit_code": result.returncode, "stdout": result.stdout[-settings.max_output_chars:], "stderr": result.stderr[-settings.max_output_chars:]}
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"exit_code": None, "error": str(exc)}

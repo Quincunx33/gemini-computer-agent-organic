@@ -40,7 +40,7 @@ def ocr(path: str) -> dict[str, Any]:
     if not shutil.which("tesseract"):
         return {"ok": False, "error": "OCR unavailable: tesseract is not installed"}
     try:
-        result = subprocess.run(["tesseract", str(target), "stdout"], capture_output=True, text=True,
+        result = subprocess.run(["tesseract", str(target), "stdout"], capture_output=True, text=True, encoding="utf-8", errors="replace",
                                 timeout=settings.command_timeout, check=False)
         return {"ok": result.returncode == 0, "text": result.stdout[-settings.max_output_chars:], "error": result.stderr[-2000:]}
     except (OSError, subprocess.TimeoutExpired) as exc:
