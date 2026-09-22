@@ -1,5 +1,9 @@
 <div align="center">
 
+## Chatbot to Agent🤖
+
+
+
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Gemini](https://img.shields.io/badge/AI-Google%20Gemini-8E75B2?style=for-the-badge&logo=googlegemini&logoColor=white)](https://ai.google.dev/)
 [![Tests](https://img.shields.io/badge/tests-73%20passing-22C55E?style=for-the-badge)](tests/)
@@ -7,7 +11,7 @@
 
 <p align="center">
   <img src="docs/architecture.png" alt="genagent architecture diagram" width="100%" />
-</p>
+</p></div>
 
 `genagent` is an experimental, terminal-based computer agent for local development and controlled workspace automation. It uses a language model to choose from a set of explicitly implemented tools, executes those tools through a bounded loop, and reports the observed results.
 
@@ -219,15 +223,3 @@ Keep changes small and testable. Update the relevant unit tests when changing a 
 
 Before opening a pull request, run the compile and `unittest` commands above. Describe external-service tests separately from local tests, including the provider, model, workspace, and any limitations.
 
-## License and project status
-
-The repository does not currently declare a license in this README. Check the repository files or ask the maintainers before redistributing the code.
-
-This is an experimental project, not a security product or a replacement for code review, operating-system controls, containers, or provider documentation.
-
-## References
-
-[1]: https://github.com/Quincunx33/genagent "genagent source repository"
-[2]: https://ai.google.dev/gemini-api/docs "Google Gemini API documentation"
-[3]: https://docs.python.org/3/library/unittest.html "Python unittest documentation"
-[4]: https://docs.python.org/3/library/venv.html "Python virtual environment documentation"
