@@ -1,4 +1,13 @@
-# genagent
+<div align="center">
+
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![Gemini](https://img.shields.io/badge/AI-Google%20Gemini-8E75B2?style=for-the-badge&logo=googlegemini&logoColor=white)](https://ai.google.dev/)
+[![Tests](https://img.shields.io/badge/tests-73%20passing-22C55E?style=for-the-badge)](tests/)
+[![Security](https://img.shields.io/badge/safety-bounded%20%26%20audited-F59E0B?style=for-the-badge)](#safety-first)
+
+<p align="center">
+  <img src="docs/architecture.png" alt="genagent architecture diagram" width="100%" />
+</p>
 
 `genagent` is an experimental, terminal-based computer agent for local development and controlled workspace automation. It uses a language model to choose from a set of explicitly implemented tools, executes those tools through a bounded loop, and reports the observed results.
 
