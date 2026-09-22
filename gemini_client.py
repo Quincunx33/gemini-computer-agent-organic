@@ -1,96 +1,190 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import random
+import threading
 import time
+from collections import OrderedDict
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from config import settings
+from errors import AgentError, normalize_exception
+from logger import get_logger
+
+
+log = get_logger("genagent.gemini")
 
 
 class GeminiClient:
-    """Small Gemini REST client implemented only with Python's standard library."""
+    """Dependency-free Gemini REST client with bounded, classified recovery."""
 
     def __init__(self, api_key: str | None = None, model: str | None = None):
         self.api_key = api_key or settings.gemini_api_key
         self.model = model or settings.gemini_model
         self.models = tuple(dict.fromkeys((self.model, *settings.gemini_fallback_models)))
+        self._cache: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+        self._cache_lock = threading.Lock()
+
+    @staticmethod
+    def _cache_key(model: str, payload: dict[str, Any]) -> str:
+        encoded = json.dumps({"model": model, "payload": payload}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _cached(self, key: str) -> dict[str, Any] | None:
+        if not settings.response_cache_enabled:
+            return None
+        now = time.time()
+        with self._cache_lock:
+            item = self._cache.get(key)
+            if not item:
+                return None
+            created, value = item
+            if now - created >= settings.response_cache_ttl:
+                self._cache.pop(key, None)
+                return None
+            self._cache.move_to_end(key)
+            return json.loads(json.dumps(value, ensure_ascii=False))
+
+    def _store_cache(self, key: str, value: dict[str, Any]) -> None:
+        if not settings.response_cache_enabled or value.get("type") != "text" or value.get("tool_calls"):
+            return
+        with self._cache_lock:
+            self._cache[key] = (time.time(), json.loads(json.dumps(value, ensure_ascii=False)))
+            self._cache.move_to_end(key)
+            while len(self._cache) > settings.response_cache_size:
+                self._cache.popitem(last=False)
 
     def available(self) -> bool:
         return bool(self.api_key)
 
+    def set_task_route(self, task: str) -> None:
+        """Prefer the fast model for short, read-only requests."""
+        text = (task or "").lower()
+        costly_words = ("write", "edit", "change", "fix", "implement", "create", "delete", "remove", "install", "update")
+        simple_words = ("status", "list", "read", "inspect", "check", "what", "show", "find")
+        if any(word in text for word in costly_words) or not any(word in text for word in simple_words):
+            self.models = tuple(dict.fromkeys((self.model, *settings.gemini_fallback_models)))
+            return
+        self.models = tuple(dict.fromkeys((settings.fast_model, self.model, *settings.gemini_fallback_models)))
+
     @staticmethod
     def _history_contents(history: list | None) -> list[dict[str, Any]]:
-        contents = []
-        for item in history or []:
-            role = item.get("role", "user") if isinstance(item, dict) else "user"
+        # Keep the newest context within a hard character budget. Tool output
+        # is evidence, not permanent transcript; retaining all of it causes
+        # prompt growth and repeated billing on every step.
+        selected: list[Any] = []
+        used = 0
+        for item in reversed(history or []):
             value = item.get("content", "") if isinstance(item, dict) else str(item)
             if isinstance(value, (dict, list)):
-                value = json.dumps(value, ensure_ascii=False)
-            # Gemini's conversational roles are model/user. Tool observations
-            # are sent as user observations rather than pretending they came
-            # from the model.
+                value = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            value = str(value)[:settings.max_tool_result_chars]
+            cost = len(value)
+            if selected and used + cost > settings.max_history_chars:
+                break
+            selected.append((item, value))
+            used += cost
+
+        contents = []
+        for item, compact_value in reversed(selected):
+            role = item.get("role", "user") if isinstance(item, dict) else "user"
             api_role = "model" if role == "assistant" else "user"
-            contents.append({"role": api_role, "parts": [{"text": str(value)}]})
+            contents.append({"role": api_role, "parts": [{"text": compact_value}]})
         return contents
 
-    def generate(self, prompt: str, tools: list[dict] | None = None,
-                 history: list | None = None) -> dict[str, Any]:
-        if not self.api_key:
-            return {"type": "text", "text": "Gemini is not configured. Run 'python setup.py'.", "tool_calls": []}
+    @staticmethod
+    def _http_error(exc: HTTPError) -> AgentError:
+        code = getattr(exc, "code", 0)
+        if code in {408, 425, 429} or code >= 500:
+            return AgentError("API_HTTP_ERROR", f"Gemini HTTP {code}", "The AI service is temporarily unavailable.", True, 503, {"http_status": code})
+        if code in {401, 403}:
+            return AgentError("API_AUTH_ERROR", f"Gemini authentication failed (HTTP {code})", "The AI API key was rejected. Check your configuration.", False, 502, {"http_status": code})
+        return AgentError("API_REQUEST_ERROR", f"Gemini rejected the request (HTTP {code})", "The AI service rejected the request.", False, 502, {"http_status": code})
 
-        contents = self._history_contents(history)
-        contents.append({"role": "user", "parts": [{"text": prompt}]})
+    @staticmethod
+    def _parse_response(data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValueError("Gemini response must be a JSON object")
+        candidates = data.get("candidates")
+        if not isinstance(candidates, list) or not candidates:
+            api_error = data.get("error")
+            raise ValueError(f"Gemini response has no candidates: {api_error or 'unknown response'}")
+        content = candidates[0].get("content", {})
+        parts = content.get("parts", []) if isinstance(content, dict) else []
+        if not isinstance(parts, list):
+            raise ValueError("Gemini response has invalid content parts")
+        text_parts = [p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text")]
+        calls = []
+        for part in parts:
+            call = part.get("functionCall") if isinstance(part, dict) else None
+            if isinstance(call, dict) and call.get("name"):
+                args = call.get("args", {})
+                calls.append({"name": str(call["name"]), "args": args if isinstance(args, dict) else {}})
+        text = "".join(text_parts)
+        if not calls and text.lstrip().startswith("{"):
+            try:
+                encoded = json.loads(text)
+                encoded_calls = encoded.get("tool_calls", []) if isinstance(encoded, dict) else []
+                if isinstance(encoded_calls, list) and all(isinstance(item, dict) and item.get("name") for item in encoded_calls):
+                    calls = [{"name": str(item["name"]), "args": item.get("args", {}) if isinstance(item.get("args", {}), dict) else {}} for item in encoded_calls]
+                    text = str(encoded.get("text", ""))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        return {"type": "tool_call" if calls else "text", "text": text, "tool_calls": calls}
+
+    def generate(self, prompt: str, tools: list[dict] | None = None, history: list | None = None) -> dict[str, Any]:
+        if not self.api_key:
+            return {"type": "error", "text": "Gemini is not configured. Run 'python setup.py'.", "tool_calls": [], "error": AgentError("NOT_CONFIGURED", "Gemini API key is missing", "Gemini is not configured.", False, 503).to_dict()["error"]}
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise AgentError("INVALID_REQUEST", "Prompt must be non-empty", "The agent prompt was empty.", False, 400)
+
         payload: dict[str, Any] = {
-            "systemInstruction": {"parts": [{"text": (
-                "You are a grounded, warm, capable local computer assistant. "
-                "Behave like a careful collaborator: notice context, preserve continuity, "
-                "adapt when results differ from expectations, and avoid performative or "
-                "unnecessary actions. Use tools for evidence, not guesses. Keep responses "
-                "concise and natural. Never reveal secrets or private chain-of-thought; "
-                "state brief reasons, actions, verification, and blockers instead. "
-                "Respect every tool's safety boundary and never bypass confirmation."
-            )}]},
-            "contents": contents,
+            "systemInstruction": {"parts": [{"text": "You are a grounded, warm, capable local computer assistant. Use tools for evidence, respect safety boundaries, and never reveal secrets or private chain-of-thought."}]},
+            "contents": self._history_contents(history) + [{"role": "user", "parts": [{"text": prompt[:settings.max_prompt_chars]}]}],
         }
         if tools:
             payload["tools"] = [{"functionDeclarations": tools}]
 
-        last_error: Exception | None = None
+        last_error: AgentError | None = None
+        attempts = max(1, min(settings.api_retries, 10))
         for model in self.models:
+            cache_key = self._cache_key(model, payload)
+            cached = self._cached(cache_key)
+            if cached is not None:
+                log.debug("Gemini response cache hit model=%s", model)
+                self.model = model
+                return cached
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
-            for attempt in range(max(1, settings.api_retries)):
-                request = Request(url, data=json.dumps(payload).encode("utf-8"),
-                                  headers={"Content-Type": "application/json"}, method="POST")
+            for attempt in range(attempts):
+                request = Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json", "Accept": "application/json"}, method="POST")
                 try:
                     with urlopen(request, timeout=settings.command_timeout) as response:
-                        data = json.loads(response.read().decode("utf-8"))
-                    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                    if not isinstance(parts, list):
-                        raise ValueError("Gemini response has invalid content parts")
-                    self.model = model
-                    text_parts = [p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text")]
-                    calls = []
-                    for part in parts:
-                        call = part.get("functionCall") if isinstance(part, dict) else None
-                        if call and call.get("name"):
-                            calls.append({"name": call["name"], "args": call.get("args", {})})
-                    text = "".join(text_parts)
-                    if not calls and text.lstrip().startswith("{"):
                         try:
-                            encoded = json.loads(text)
-                            encoded_calls = encoded.get("tool_calls", []) if isinstance(encoded, dict) else []
-                            if isinstance(encoded_calls, list) and all(
-                                isinstance(item, dict) and item.get("name") for item in encoded_calls
-                            ):
-                                calls = [{"name": item["name"], "args": item.get("args", {})} for item in encoded_calls]
-                                text = str(encoded.get("text", ""))
-                        except (json.JSONDecodeError, TypeError, ValueError):
-                            pass
-                    return {"type": "tool_call" if calls else "text", "text": text, "tool_calls": calls}
-                except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError) as exc:
-                    last_error = exc
-                    if attempt + 1 < max(1, settings.api_retries):
-                        time.sleep(min(2 ** attempt, 8))
-        return {"type": "text", "text": f"All configured Gemini models failed: {last_error}", "tool_calls": []}
+                            raw = response.read(settings.max_api_response_bytes)
+                        except TypeError:
+                            # Keep compatibility with small test/dialect adapters
+                            # that expose read() without a size parameter.
+                            raw = response.read()
+                        if len(raw) > settings.max_api_response_bytes:
+                            raise ValueError("Gemini response exceeds configured size limit")
+                    data = json.loads(raw.decode("utf-8"))
+                    result = self._parse_response(data)
+                    self.model = model
+                    self._store_cache(cache_key, result)
+                    return result
+                except HTTPError as exc:
+                    err = self._http_error(exc)
+                except (URLError, TimeoutError, OSError, json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+                    err = normalize_exception(exc, operation="Gemini API request")
+                last_error = err
+                log.warning("Gemini request failed model=%s attempt=%s/%s code=%s", model, attempt + 1, attempts, err.code)
+                if not err.retryable:
+                    break
+                if attempt + 1 < attempts:
+                    time.sleep(min(2 ** attempt, 8) + random.uniform(0, 0.25))
+
+        err = last_error or AgentError("API_UNAVAILABLE", "No Gemini model was available", "The AI service is unavailable.", True, 503)
+        return {"type": "error", "text": f"{err.public_message} (error_id={err.error_id})", "tool_calls": [], "error": err.to_dict()["error"]}

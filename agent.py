@@ -4,6 +4,7 @@ from text_safety import configure_terminal
 from config import settings
 from agent_loop import AgentLoop
 from memory import Memory
+from platform_support import detect
 
 # Terminal colors for user-friendly UI
 BLUE = "\033[94m"
@@ -49,7 +50,8 @@ def main() -> None:
             print(f"  {GREEN}/exit{RESET}        - Quit the program\n")
             continue
         if text == "/status":
-            print(f"{YELLOW}[STATUS]{RESET} Model: {settings.gemini_model} | Steps: {settings.max_agent_steps}")
+            info = detect()
+            print(f"{YELLOW}[STATUS]{RESET} Model: {settings.gemini_model} | Steps: {settings.max_agent_steps} | Platform: {info.profile} | Shell: {info.shell_family}")
             continue
         if text == "/model":
             print(f"{YELLOW}[MODEL]{RESET} {settings.gemini_model}")

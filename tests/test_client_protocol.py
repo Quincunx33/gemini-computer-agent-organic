@@ -50,6 +50,15 @@ class ProtocolTests(unittest.TestCase):
         result = AgentLoop(SequenceClient(), output=lambda _value: None).run("inspect")
         self.assertEqual(result, "summary complete")
 
+    def test_final_text_response_is_cached(self):
+        payload = {"candidates": [{"content": {"parts": [{"text": "cached answer"}]}}]}
+        client = GeminiClient(api_key="test-key", model="test-model")
+        with patch("gemini_client.urlopen", return_value=FakeResponse(payload)) as request:
+            first = client.generate("same", [])
+            second = client.generate("same", [])
+        self.assertEqual(first, second)
+        self.assertEqual(request.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
