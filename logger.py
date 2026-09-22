@@ -28,12 +28,23 @@ class SafeFormatter(logging.Formatter):
 def get_logger(name: str = "genagent") -> logging.Logger:
     logger = logging.getLogger(name)
     if not logger.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(SafeFormatter())
-        logger.addHandler(handler)
+        # Write logs to a file, not stdout — users should not see raw JSON logs.
+        log_file = os.getenv("AGENT_LOG_FILE", "agent.log")
+        try:
+            file_handler = logging.FileHandler(log_file, encoding="utf-8")
+            file_handler.setFormatter(SafeFormatter())
+            logger.addHandler(file_handler)
+        except (OSError, PermissionError):
+            # If file logging fails (e.g. read-only fs), use stderr at ERROR only.
+            fallback = logging.StreamHandler()
+            fallback.setLevel(logging.ERROR)
+            fallback.setFormatter(SafeFormatter())
+            logger.addHandler(fallback)
         logger.propagate = False
-    level = os.getenv("AGENT_LOG_LEVEL", "INFO").upper()
-    logger.setLevel(getattr(logging, level, logging.INFO))
+    # Default WARNING so routine retries don't appear on screen.
+    # Set AGENT_LOG_LEVEL=DEBUG for verbose output.
+    level = os.getenv("AGENT_LOG_LEVEL", "WARNING").upper()
+    logger.setLevel(getattr(logging, level, logging.WARNING))
     return logger
 
 

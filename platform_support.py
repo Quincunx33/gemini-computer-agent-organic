@@ -21,7 +21,7 @@ class PlatformInfo:
     gui_backend: str
 
 
-_ALL_TOOLS = {"run_command", "read_file", "write_file", "self_update", "list_directory", "verify_python", "platform_info", "open_app", "list_processes", "terminate_process", "gui_capabilities", "screenshot", "ocr", "mouse_click", "type_text", "press_key"}
+_ALL_TOOLS = {"run_command", "read_file", "write_file", "create_file", "move_file", "delete_file", "self_update", "list_directory", "verify_python", "verify_tool", "find_alternatives", "install_and_verify", "search_web", "install_plugin", "parallel_analysis", "verify_project", "preview_diff", "git_checkpoint", "platform_info", "open_app", "list_processes", "terminate_process", "gui_capabilities", "screenshot", "ocr", "mouse_click", "type_text", "press_key"}
 _GUI_ACTION_TOOLS = {"screenshot", "ocr", "mouse_click", "type_text", "press_key"}
 
 

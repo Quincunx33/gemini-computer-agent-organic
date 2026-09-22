@@ -1,6 +1,9 @@
 from dataclasses import dataclass, asdict
 import re
 import subprocess
+import os
+import signal
+import shlex
 from typing import Optional
 
 from config import settings
@@ -8,6 +11,7 @@ from errors import normalize_exception
 from permissions import classify_command, confirm, redact_secrets
 from tools.filesystem import safe_path
 from platform_support import detect
+from tools.fallbacks import find_alternatives
 
 
 @dataclass
@@ -52,10 +56,34 @@ def run_command(command: str, cwd: Optional[str] = None, timeout: Optional[int] 
         run_cwd = safe_path(cwd or ".")
         requested_timeout = settings.command_timeout if timeout is None else int(timeout)
         requested_timeout = max(1, min(requested_timeout, 24 * 60 * 60))
-        process = subprocess.run(command, shell=True, cwd=run_cwd, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=requested_timeout)
-        return CommandResult(command, process.returncode, _output(process.stdout), _output(process.stderr)).as_dict()
-    except subprocess.TimeoutExpired as exc:
-        return CommandResult(command, None, _output(exc.stdout), _output(exc.stderr), True, {"code": "TIMEOUT", "message": "Command timed out"}).as_dict()
+        kwargs = {"shell": True, "cwd": run_cwd, "text": True, "encoding": "utf-8", "errors": "replace", "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+        if os.name != "nt":
+            kwargs["start_new_session"] = True
+        process = subprocess.Popen(command, **kwargs)
+        try:
+            stdout, stderr = process.communicate(timeout=requested_timeout)
+            result = CommandResult(command, process.returncode, _output(stdout), _output(stderr)).as_dict()
+            if process.returncode == 127 or "command not found" in (stderr or "").lower() or "not recognized" in (stderr or "").lower():
+                try:
+                    requested = shlex.split(command)[0]
+                except ValueError:
+                    requested = command.strip().split()[0]
+                result["error"] = {"code": "COMMAND_NOT_FOUND", "message": f"Command unavailable: {requested}", "alternatives": find_alternatives(requested)}
+            return result
+        except subprocess.TimeoutExpired as exc:
+            if os.name != "nt":
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                process.kill()
+            stdout, stderr = process.communicate()
+            return CommandResult(command, None, _output(stdout or exc.stdout), _output(stderr or exc.stderr), True, {"code": "TIMEOUT", "message": "Command timed out; process group terminated"}).as_dict()
+        except KeyboardInterrupt:
+            if os.name != "nt":
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                process.kill()
+            process.communicate()
+            raise
     except Exception as exc:
         err = normalize_exception(exc, operation="command execution")
         return CommandResult(command, None, "", err.public_message, error={"code": err.code, "message": err.public_message, "error_id": err.error_id}).as_dict()

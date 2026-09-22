@@ -1,9 +1,22 @@
 from __future__ import annotations
 
 TOOLS=[
+    {"name":"list_skills","description":"List installed skill packs and their descriptions.","parameters":{"type":"object","properties":{}}},
+    {"name":"find_alternatives","description":"Check whether a capability exists and find installed or standard-library alternatives without installing anything.","parameters":{"type":"object","properties":{"requested":{"type":"string"}},"required":["requested"]}},
+    {"name":"verify_tool","description":"Verify an installed CLI tool and report its version.","parameters":{"type":"object","properties":{"requested":{"type":"string"}},"required":["requested"]}},
+    {"name":"install_and_verify","description":"Install a known allowlisted tool, then verify it; returns a fallback on failure.","parameters":{"type":"object","properties":{"requested":{"type":"string"}},"required":["requested"]}},
+    {"name":"search_web","description":"Search public web results and return source URLs for an unavailable tool or fact.","parameters":{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}},"required":["query"]}},
+    {"name":"install_plugin","description":"Validate and install a plugin zip into the workspace without executing plugin code.","parameters":{"type":"object","properties":{"archive":{"type":"string"}},"required":["archive"]}},
+    {"name":"parallel_analysis","description":"Run up to four bounded read-only sub-agent analyses in parallel.","parameters":{"type":"object","properties":{"tasks":{"type":"array","items":{"type":"string"}},"max_workers":{"type":"integer"}},"required":["tasks"]}},
+    {"name":"verify_project","description":"Run the project's standard unittest suite and return evidence for recovery or completion.","parameters":{"type":"object","properties":{}}},
+    {"name":"preview_diff","description":"Show the current Git diff without changing files.","parameters":{"type":"object","properties":{"path":{"type":"string"}}}},
+    {"name":"git_checkpoint","description":"Save a reversible Git diff checkpoint artifact before a change.","parameters":{"type":"object","properties":{"label":{"type":"string"}}}},
     {"name":"run_command","description":"Run a workspace shell command; risky commands require confirmation.","parameters":{"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string"}},"required":["command"]}},
     {"name":"read_file","description":"Read a workspace text file.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
     {"name":"write_file","description":"Write a workspace file after inspection.","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}},
+    {"name":"create_file","description":"Create a new workspace file without overwriting an existing file.","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}},
+    {"name":"move_file","description":"Move a workspace file without overwriting an existing destination.","parameters":{"type":"object","properties":{"source":{"type":"string"},"destination":{"type":"string"}},"required":["source","destination"]}},
+    {"name":"delete_file","description":"Delete a workspace file only after explicit user approval.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
     {"name":"self_update","description":"Atomically update a source file with backup and Python rollback.","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}},
     {"name":"list_directory","description":"List workspace files.","parameters":{"type":"object","properties":{"path":{"type":"string"}}}},
     {"name":"verify_python","description":"Compile a Python file and report syntax errors.","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
@@ -20,8 +33,8 @@ TOOLS=[
 ]
 
 
-_READ_TOOLS = {"list_directory", "read_file", "platform_info", "gui_capabilities", "list_processes", "verify_python"}
-_WRITE_TOOLS = {"write_file", "self_update", "run_command", "read_file", "list_directory", "verify_python"}
+_READ_TOOLS = {"list_skills", "find_alternatives", "search_web", "verify_project", "preview_diff", "list_directory", "read_file", "platform_info", "gui_capabilities", "list_processes", "verify_python", "verify_tool"}
+_WRITE_TOOLS = {"write_file", "create_file", "move_file", "delete_file", "self_update", "install_and_verify", "install_plugin", "run_command", "read_file", "list_directory", "verify_python"}
 _GUI_TOOLS = {"platform_info", "gui_capabilities", "screenshot", "ocr", "mouse_click", "type_text", "press_key"}
 _PROCESS_TOOLS = {"platform_info", "list_processes", "terminate_process", "open_app", "run_command"}
 

@@ -1,35 +1,76 @@
 ---
 name: gemini-agent-tools
-description: Extend or use the Gemini computer agent's tool layer. Use when adding terminal, filesystem, Git, verification, browser, or other action tools.
+description: Extend or use the Gemini computer agent tool layer. Use when adding terminal, filesystem, Git, verification, browser, or other action tools.
 ---
 
 # Gemini Agent Tools
 
-## Tool contract
+## Missing tool protocol — NEVER cancel the task
 
-Every tool must have a stable name, concise description, JSON-compatible argument schema, explicit safety behavior, structured return data, and a verification path. Keep tool execution in `agent_loop.py` and keep implementation adapters under `tools/`.
+When a tool or command is not found, follow this exact order:
 
-## Adding a tool
+### Step 1 — Detect environment and install
+Call `find_alternatives` with the missing tool name.
+If `install_available` is true, run the `install_command` shown.
+Ask user approval for the install command before running it.
 
-1. Implement a small function in `tools/<name>.py`.
-2. Validate paths and argument sizes before performing side effects.
-3. Add the function declaration to `planner.py`.
-4. Route the name in `AgentLoop.execute`.
-5. Return a dictionary with predictable keys; include `error` instead of leaking a traceback to the model.
-6. Add a `unittest` test using temporary workspace data or a fake client.
-7. Run the complete verification workflow.
+Package managers by environment:
+- Alpine / iSH → `apk add <package>`
+- Debian / Ubuntu / Cloud Shell → `apt-get install -y <package>`
+- macOS → `brew install <package>`
+- Any Python tool → `pip install <package>`
+
+### Step 2 — Use stdlib fallback
+Only if install fails or is not available.
+Use the `stdlib_fallback` returned by `find_alternatives`.
+
+Common stdlib workarounds:
+
+**git clone not available:**
+```python
+import urllib.request, zipfile, io
+url = "https://github.com/{owner}/{repo}/archive/refs/heads/main.zip"
+z = zipfile.ZipFile(io.BytesIO(urllib.request.urlopen(url).read()))
+z.extractall(".")
+```
+
+**curl/wget not available:**
+```python
+import urllib.request
+data = urllib.request.urlopen(url).read()
+```
+
+**HTTP server:**
+```python
+import http.server, socketserver, threading
+httpd = socketserver.TCPServer(("", 8080), http.server.SimpleHTTPRequestHandler)
+threading.Thread(target=httpd.serve_forever, daemon=True).start()
+```
+
+### Step 3 — Report clearly
+If both install and stdlib fail, explain exactly:
+- What was tried
+- What failed and why
+- What the user can do next
+
+**Task cancellation is never acceptable.**
+
+## Adding a new tool
+
+1. Implement in `tools/<name>.py`.
+2. Validate paths and argument sizes before side effects.
+3. Add declaration to `planner.py`.
+4. Route in `AgentLoop.execute`.
+5. Return a dict with predictable keys; include `error` instead of a traceback.
+6. Add a `unittest` test.
 
 ## Existing core tools
 
-- `run_command`: bounded shell execution with risk confirmation and redacted output.
-- `read_file` / `write_file` / `list_directory`: workspace-confined file operations.
-- `verify_python`: syntax compilation without external packages.
-- `self_update`: atomic source update with backup and Python syntax rollback.
-- `platform_info`: report the actual host and available capabilities.
-- `open_app`: use the host launcher to open a URL, file, or application.
-- `list_processes` / `terminate_process`: inspect or confirmation-protect process control.
-
-Treat GUI support as capability-based. Do not promise arbitrary iOS control; use Shortcuts or a-Shell there. On desktop platforms, require the user's display/accessibility permissions before adding mouse or keyboard automation.
-
-Do not add a tool that bypasses confirmation, reads secrets by default, writes outside the workspace, or silently changes permissions.
-For self-updates, inspect the current file first, keep the generated backup, run syntax checks and tests, and report or restore any failure.
+- `run_command`: bounded shell execution with risk confirmation.
+- `read_file` / `write_file` / `list_directory`: workspace-confined file ops.
+- `verify_python`: syntax check without external packages.
+- `self_update`: atomic source update with backup and rollback.
+- `platform_info`: report actual host and capabilities.
+- `find_alternatives`: get install command and stdlib fallback for missing tools.
+- `open_app`: open a URL, file, or application via host launcher.
+- `list_processes` / `terminate_process`: process inspection and control.

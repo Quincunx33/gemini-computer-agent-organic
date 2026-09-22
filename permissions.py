@@ -17,6 +17,9 @@ def classify_command(command: str) -> Risk:
 def redact_secrets(value: str) -> str:
     """Mask common key/token assignments before writing output to the screen or memory."""
     value = re.sub(r"(?i)(api[_-]?key|token|password|secret)\s*([=:])\s*([^\s,;]+)", r"\1\2[REDACTED]", value)
+    value = re.sub(r"-----BEGIN [A-Z ]+ PRIVATE KEY-----.*?-----END [A-Z ]+ PRIVATE KEY-----", "[PRIVATE_KEY_REDACTED]", value, flags=re.I | re.S)
+    value = re.sub(r"\beyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b", "[JWT_REDACTED]", value)
+    value = re.sub(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b", "[CLOUD_KEY_REDACTED]", value)
     # Also cover serialized JSON, e.g. {"API_KEY": "value"}.
     return re.sub(
         r'(?i)(["\']?(?:api[_-]?key|token|password|secret)["\']?\s*:\s*["\']?)([^,"\'}\s]+)',

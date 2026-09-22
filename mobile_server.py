@@ -15,6 +15,7 @@ from errors import AgentError, error_payload, normalize_exception, traceback_tex
 from logger import get_logger
 from platform_support import capabilities
 from security import AuditLogger, RateLimiter
+from controller import TaskController
 
 
 log = get_logger("genagent.mobile")
@@ -71,6 +72,13 @@ class CommandHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if not self._begin():
             return
+        if self.path == "/status":
+            if not self._authorized():
+                self._send(401, {"error": {"code": "UNAUTHORIZED", "message": "Bearer token required", "error_id": self._request_id()}})
+                return
+            controller = getattr(self.server, "controller", None)
+            self._send(200, {"ok": True, "request_id": self._request_id(), "status": controller.status_info() if controller else {"status": "unconfigured"}})
+            return
         if self.path != "/capabilities":
             self._audit("not_found", endpoint=self.path)
             self._send(404, {"error": {"code": "NOT_FOUND", "message": "Not found", "error_id": self._request_id()}})
@@ -83,6 +91,13 @@ class CommandHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         if not self._begin():
+            return
+        if self.path == "/cancel":
+            if not self._authorized():
+                self._send(401, {"error": {"code": "UNAUTHORIZED", "message": "Bearer token required", "error_id": self._request_id()}})
+                return
+            controller = getattr(self.server, "controller", None)
+            self._send(200, {"ok": True, "request_id": self._request_id(), "status": controller.cancel() if controller else {"status": "unconfigured"}})
             return
         if self.path != "/command":
             self._audit("not_found", endpoint=self.path)
@@ -120,6 +135,12 @@ class CommandHandler(BaseHTTPRequestHandler):
             if not task or len(task) > 4000:
                 raise AgentError("INVALID_REQUEST", "task must be 1-4000 characters", "task must be 1-4000 characters.", False, 400)
             self._audit("command_start", task=task[:200])
+            controller = getattr(self.server, "controller", None)
+            if controller:
+                result = controller.start(task)
+                self._audit("command_accepted", task=task[:200])
+                self._send(202, {"ok": True, "request_id": self._request_id(), **result})
+                return
             output: list[str] = []
             result = AgentLoop(output=output.append).run(task)
             self._audit("command_complete", result=str(result)[:200])
@@ -160,6 +181,7 @@ def main() -> None:
         parser.error("Non-loopback binding requires --certfile and --keyfile (HTTPS)")
     token = args.token or secrets.token_urlsafe(32)
     server = ThreadingHTTPServer((args.host, args.port), CommandHandler)
+    server.controller = TaskController(AgentLoop())  # type: ignore[attr-defined]
     server.agent_token = token  # type: ignore[attr-defined]
     server.limiter = RateLimiter(settings.mobile_rate_limit, settings.mobile_rate_window)  # type: ignore[attr-defined]
     server.audit = AuditLogger(Path(args.audit_log))  # type: ignore[attr-defined]

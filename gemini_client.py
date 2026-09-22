@@ -5,7 +5,7 @@ import hashlib
 import random
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -13,9 +13,41 @@ from urllib.request import Request, urlopen
 from config import settings
 from errors import AgentError, normalize_exception
 from logger import get_logger
+from quota import RequestQuota
 
 
 log = get_logger("genagent.gemini")
+
+
+class _RequestGate:
+    """Process-wide pacing gate so retries/fallbacks cannot burst the API."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._events: deque[float] = deque()
+        self._last = 0.0
+
+    def acquire(self, cancel_event=None) -> bool:
+        while True:
+            now = time.monotonic()
+            with self._lock:
+                window = max(1, settings.gemini_rate_window)
+                while self._events and now - self._events[0] >= window:
+                    self._events.popleft()
+                interval_wait = max(0.0, settings.gemini_min_interval - (now - self._last))
+                quota_wait = max(0.0, window - (now - self._events[0])) if len(self._events) >= settings.gemini_rate_limit else 0.0
+                wait = max(interval_wait, quota_wait)
+                if wait <= 0:
+                    self._last = now
+                    self._events.append(now)
+                    return True
+            if cancel_event is not None and cancel_event.is_set():
+                return False
+            time.sleep(min(wait, 0.25))
+
+
+_REQUEST_GATE = _RequestGate()
+_PERSISTENT_QUOTA = RequestQuota(settings.db_path)
 
 
 class GeminiClient:
@@ -27,6 +59,7 @@ class GeminiClient:
         self.models = tuple(dict.fromkeys((self.model, *settings.gemini_fallback_models)))
         self._cache: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
         self._cache_lock = threading.Lock()
+        self._model_failures: dict[str, tuple[int, float]] = {}
 
     @staticmethod
     def _cache_key(model: str, payload: dict[str, Any]) -> str:
@@ -126,7 +159,10 @@ class GeminiClient:
         text = "".join(text_parts)
         if not calls and text.lstrip().startswith("{"):
             try:
-                encoded = json.loads(text)
+                # Some compatible responses append a short explanation after
+                # the JSON envelope. Decode the first complete object instead
+                # of exposing the raw JSON to the user.
+                encoded, _ = json.JSONDecoder().raw_decode(text.lstrip())
                 encoded_calls = encoded.get("tool_calls", []) if isinstance(encoded, dict) else []
                 if isinstance(encoded_calls, list) and all(isinstance(item, dict) and item.get("name") for item in encoded_calls):
                     calls = [{"name": str(item["name"]), "args": item.get("args", {}) if isinstance(item.get("args", {}), dict) else {}} for item in encoded_calls]
@@ -135,7 +171,7 @@ class GeminiClient:
                 pass
         return {"type": "tool_call" if calls else "text", "text": text, "tool_calls": calls}
 
-    def generate(self, prompt: str, tools: list[dict] | None = None, history: list | None = None) -> dict[str, Any]:
+    def generate(self, prompt: str, tools: list[dict] | None = None, history: list | None = None, cancel_event=None) -> dict[str, Any]:
         if not self.api_key:
             return {"type": "error", "text": "Gemini is not configured. Run 'python setup.py'.", "tool_calls": [], "error": AgentError("NOT_CONFIGURED", "Gemini API key is missing", "Gemini is not configured.", False, 503).to_dict()["error"]}
         if not isinstance(prompt, str) or not prompt.strip():
@@ -150,7 +186,9 @@ class GeminiClient:
 
         last_error: AgentError | None = None
         attempts = max(1, min(settings.api_retries, 10))
-        for model in self.models:
+        now = time.time()
+        healthy_models = [model for model in self.models if now >= self._model_failures.get(model, (0, 0))[1]] or list(self.models)
+        for model in healthy_models:
             cache_key = self._cache_key(model, payload)
             cached = self._cached(cache_key)
             if cached is not None:
@@ -159,7 +197,14 @@ class GeminiClient:
                 return cached
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
             for attempt in range(attempts):
+                if cancel_event is not None and cancel_event.is_set():
+                    return {"type": "cancelled", "text": "Gemini request cancelled.", "tool_calls": [], "error": {"code": "CANCELLED"}}
+                if not _PERSISTENT_QUOTA.allow(settings.gemini_persistent_limit, settings.gemini_persistent_window):
+                    return {"type": "error", "text": "Gemini request budget reached. Please wait before starting more work.", "tool_calls": [], "error": {"code": "API_QUOTA_EXCEEDED"}}
+                if not _REQUEST_GATE.acquire(cancel_event):
+                    return {"type": "cancelled", "text": "Gemini request cancelled.", "tool_calls": [], "error": {"code": "CANCELLED"}}
                 request = Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json", "Accept": "application/json"}, method="POST")
+                retry_after = None
                 try:
                     with urlopen(request, timeout=settings.command_timeout) as response:
                         try:
@@ -173,18 +218,31 @@ class GeminiClient:
                     data = json.loads(raw.decode("utf-8"))
                     result = self._parse_response(data)
                     self.model = model
+                    self._model_failures.pop(model, None)
                     self._store_cache(cache_key, result)
                     return result
                 except HTTPError as exc:
                     err = self._http_error(exc)
+                    try:
+                        retry_after = float(exc.headers.get("Retry-After", "")) if exc.headers else None
+                    except (TypeError, ValueError):
+                        retry_after = None
                 except (URLError, TimeoutError, OSError, json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
                     err = normalize_exception(exc, operation="Gemini API request")
                 last_error = err
+                if err.retryable:
+                    failures, _ = self._model_failures.get(model, (0, 0))
+                    self._model_failures[model] = (failures + 1, time.time() + min(settings.gemini_backoff_max, settings.gemini_backoff_base * (2 ** min(failures, 5))))
                 log.warning("Gemini request failed model=%s attempt=%s/%s code=%s", model, attempt + 1, attempts, err.code)
                 if not err.retryable:
                     break
                 if attempt + 1 < attempts:
-                    time.sleep(min(2 ** attempt, 8) + random.uniform(0, 0.25))
+                    delay = retry_after if retry_after is not None else min(settings.gemini_backoff_max, settings.gemini_backoff_base * (2 ** attempt))
+                    end = time.monotonic() + delay + random.uniform(0, 0.25)
+                    while time.monotonic() < end:
+                        if cancel_event is not None and cancel_event.is_set():
+                            return {"type": "cancelled", "text": "Gemini request cancelled.", "tool_calls": [], "error": {"code": "CANCELLED"}}
+                        time.sleep(min(0.25, max(0.01, end - time.monotonic())))
 
         err = last_error or AgentError("API_UNAVAILABLE", "No Gemini model was available", "The AI service is unavailable.", True, 503)
         return {"type": "error", "text": f"{err.public_message} (error_id={err.error_id})", "tool_calls": [], "error": err.to_dict()["error"]}

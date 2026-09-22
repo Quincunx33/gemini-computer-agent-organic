@@ -11,7 +11,14 @@ from tools.filesystem import safe_path
 
 try:
     import pyautogui  # type: ignore
+    # Trigger display connection check at import time so headless environments
+    # fail fast with a clear message rather than crashing mid-task.
+    pyautogui.FAILSAFE = True
 except ImportError:
+    pyautogui = None
+except Exception:
+    # Covers Xlib.error.DisplayConnectionError and similar display errors
+    # that occur in headless environments (CI, SSH, iOS, Alpine).
     pyautogui = None
 
 

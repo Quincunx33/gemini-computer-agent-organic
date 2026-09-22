@@ -35,7 +35,7 @@ class TaskStore:
     def save(self, task_id: str, task: str, status: str, step: int, history: list) -> None:
         if not task_id or not isinstance(task, str):
             raise ValueError("invalid task record")
-        if status not in {"running", "completed", "failed", "paused"}:
+        if status not in {"running", "completed", "failed", "paused", "cancelled"}:
             raise ValueError(f"invalid task status: {status}")
         encoded = json.dumps(history if isinstance(history, list) else [], ensure_ascii=False, default=str)
         with self._connect() as db:
