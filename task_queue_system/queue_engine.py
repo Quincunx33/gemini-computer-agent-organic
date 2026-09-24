@@ -19,12 +19,41 @@ class TaskState:
     RETRYING = "RETRYING"
     CANCELLED = "CANCELLED"
 
+class TaskHandle(dict):
+    """Dictionary-compatible handle whose task attributes refresh from the queue."""
+
+    _LIVE_FIELDS = {"status", "state", "result", "error", "retries", "attempts", "updated_at"}
+
+    def __init__(self, engine: "QueueEngine", task: dict):
+        super().__init__(task)
+        self._engine = engine
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        if name in self._LIVE_FIELDS:
+            task = self._engine.get_task(self["id"])
+            if task is not None:
+                if name == "state":
+                    return task.get("status")
+                return task.get(name)
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
 class QueueEngine:
     """
     Priority-based SQLite persistent task queue with worker thread pool,
     task states, and exponential backoff retry logic.
     """
-    def __init__(self, db_path: str = "task_queue.db", max_workers: int = 4, metrics_collector = None):
+    def __init__(self, db_path: str = "task_queue.db", max_workers: int = 4,
+                 metrics_collector=None, num_workers: Optional[int] = None):
+        # ``num_workers`` was used by the original public API; keep it as an
+        # alias while retaining ``max_workers`` for the newer callers.
+        if num_workers is not None:
+            max_workers = num_workers
         self.db_path = db_path
         self.max_workers = max_workers
         self.metrics_collector = metrics_collector
@@ -97,7 +126,8 @@ class QueueEngine:
                 logger.info(f"Submitted task {t_id} ({name}) with priority {priority}")
             finally:
                 conn.close()
-        return self.get_task(t_id)
+        task = self.get_task(t_id)
+        return TaskHandle(self, task) if task is not None else None
 
     def get_task(self, task_id: str) -> Optional[dict]:
         conn = self._get_connection()
@@ -161,7 +191,7 @@ class QueueEngine:
                 if not row:
                     return False
                 status = row["status"]
-                if status in (TaskState.PENDING, TaskState.RETRYING):
+                if status in (TaskState.PENDING, TaskState.RETRYING, TaskState.RUNNING):
                     conn.execute(
                         "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
                         (TaskState.CANCELLED, time.time(), task_id)
@@ -311,9 +341,10 @@ class QueueEngine:
         try:
             conn.execute(
                 """
-                UPDATE tasks SET status = ?, result = ?, updated_at = ? WHERE id = ?
+                UPDATE tasks SET status = ?, result = ?, updated_at = ?
+                WHERE id = ? AND status != ?
                 """,
-                (TaskState.COMPLETED, res_str, now, task_id)
+                (TaskState.COMPLETED, res_str, now, task_id, TaskState.CANCELLED)
             )
             conn.commit()
             logger.info(f"Task {task_id} completed successfully in {duration:.4f}s")
@@ -352,10 +383,10 @@ class QueueEngine:
             try:
                 conn.execute(
                     """
-                    UPDATE tasks SET status = ?, retries = ?, error = ?, next_run_at = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (TaskState.RETRYING, retries, error, next_run, time.time(), task_id)
+                        UPDATE tasks SET status = ?, retries = ?, error = ?, payload = ?, next_run_at = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                    (TaskState.RETRYING, retries, error, json.dumps(task["payload"]), next_run, time.time(), task_id)
                 )
                 conn.commit()
                 logger.warning(f"Task {task_id} scheduled for retry #{retries} in {backoff_delay:.2f}s")
