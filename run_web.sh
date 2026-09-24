@@ -1,21 +1,7 @@
 #!/usr/bin/env bash
-# GenAgent One-Click Multi-Device Web Server Runner
-# Works on Linux, macOS, Android (Termux), iOS (iSH, a-Shell)
-
-cd "$(dirname "$0")" || exit 1
-
-echo "========================================================"
-echo "    Starting GenAgent Multi-Device Web Server...       "
-echo "========================================================"
-
-if command -v python3 >/dev/null 2>&1; then
-    PYTHON_CMD="python3"
-elif command -v python >/dev/null 2>&1; then
-    PYTHON_CMD="python"
-else
-    echo "Error: Python 3 was not found on this device."
-    exit 1
-fi
-
-PORT="${1:-8080}"
-exec $PYTHON_CMD web_server.py --port "$PORT"
+# Start the dependency-free GenAgent control panel.
+set -e
+cd "$(dirname "$0")"
+PYTHON_CMD="${PYTHON_CMD:-python3}"
+command -v "$PYTHON_CMD" >/dev/null 2>&1 || { echo "Python 3 is required." >&2; exit 1; }
+exec "$PYTHON_CMD" web_server.py --host "${HOST:-0.0.0.0}" --port "${1:-8080}"
