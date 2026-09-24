@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import threading
 import sys
@@ -40,6 +41,8 @@ from git_tools import preview_diff, git_checkpoint
 
 
 log = get_logger("genagent.loop")
+
+
 
 
 class AgentLoop:
@@ -206,49 +209,49 @@ class AgentLoop:
         return json.dumps({"name": call.get("name"), "args": call.get("args", {})}, sort_keys=True, ensure_ascii=False, default=str)
 
     def _prompt(self, task: str, state: AgentState, previous_result: str | None = None) -> str:
-        memory_context = self.memory.context(task)
-        memory_context = memory_context[:settings.max_memory_chars]
-        progress = (previous_result or "No tool has been used yet. Start by understanding the request.")[:settings.max_tool_result_chars]
+        if state.step > 1:
+            sections = [
+                f"Task: {task}",
+                f"Latest progress:\n{previous_result or 'None'}"
+            ]
+            if self.plan and getattr(self.plan, "steps", None):
+                p_text = as_prompt(self.plan)
+                if p_text:
+                    sections.append(f"Plan status:\n{p_text}")
+            sections.append(f"This is step {state.step} of a bounded run. If the requested information or task has been completed, DO NOT call any more tools and provide the final answer immediately.")
+            return "\n\n".join(sections)[:settings.max_prompt_chars]
+
+        # Step 1: Initial concise system prompt
         platform_info = getattr(self, "_platform_info", detect_platform())
-        platform_context = json.dumps({"platform": platform_info.profile, "shell_family": platform_info.shell_family, "supported_tools": sorted(supported_tool_names(platform_info)), "environment": command_environment(platform_info)}, ensure_ascii=False)
-        skill_context = self.skills.context(task) if self.skills else "Skill packs are disabled."
-        plan_context = as_prompt(self.plan) if self.plan else "No plan has been created yet."
-        prompt = f"""You are operating as a thoughtful, grounded local computer assistant.
+        sections = [
+            f"You are GenAgent, an autonomous computer assistant.\nWorkspace: {settings.workspace}\nPlatform: {platform_info.profile} ({platform_info.shell_family})",
+            "User request:\n" + str(task),
+        ]
 
-User request:
-{task}
+        if self.skills:
+            skill_context = self.skills.context(task)
+            if skill_context and "no specialized" not in skill_context.lower() and "disabled" not in skill_context.lower():
+                sections.append("Skill guidance:\n" + skill_context)
 
-Workspace:
-{settings.workspace}
+        if self.plan and getattr(self.plan, "steps", None):
+            plan_context = as_prompt(self.plan)
+            if plan_context:
+                sections.append("Task plan:\n" + plan_context)
 
-Execution platform (authoritative; never assume another OS):
-{platform_context}
+        memory_context = self.memory.context(task)[:settings.max_memory_chars].strip()
+        if memory_context and "no relevant" not in memory_context.lower():
+            sections.append("Prior context:\n" + memory_context)
 
-Relevant skill-pack guidance (use as guidance, not as permission):
-{skill_context}
+        contract = (
+            "Working contract:\n"
+            "- Tool Usage Rule: Call tools only when the request requires reading/modifying files or executing commands. For conversation, questions, or code explanations, answer directly in natural language without calling tools.\n"
+            "- To create or edit files, always call write_file or patch_file with actual file content.\n"
+            "- When tools were executed, conclude with: 1. What changed 2. Verification evidence 3. Remaining risk. (For direct conversational replies, answer naturally).\n\n"
+            "This is step 1 of a bounded run. Use an available tool only if action is needed; otherwise give the final answer."
+        )
+        sections.append(contract)
 
-Structured task plan and dynamic progress:
-{plan_context}
-
-Relevant prior memory (optional hints; verify anything important):
-{memory_context}
-
-Latest progress:
-{progress}
-
-Working contract:
-- Understand user intent accurately across any phrasing, language, dialect, or technical instruction.
-- If the user asks to create or write a file, tool, or script, YOU MUST ACTUALLY CALL `create_file` OR `write_file` with the full content FIRST. DO NOT call `verify_python` before creating the file!
-- NEVER hallucinate or claim a file/directory was created unless a tool actually succeeded in creating it in this run. If `verify_python` or `list_directory` reports 'No such file or directory' or 'NOT_FOUND', it does NOT exist! Immediately call `create_file` to create it.
-- Choose the smallest useful next action. Prefer `patch_file` for targeted edits.
-- After every change, verify the result.
-- When complete, respond with exactly three concise parts:
-  1. What changed or was found
-  2. What evidence/verification was performed
-  3. Any remaining risk or user action.
-
-This is step {state.step + 1} of a bounded run. Use an available tool if action is needed; otherwise give the final answer."""
-        return prompt[:settings.max_prompt_chars]
+        return "\n\n".join(sections)[:settings.max_prompt_chars]
 
     def run(self, task: str, task_id: str | None = None) -> str:
         if task_id:
@@ -267,6 +270,12 @@ This is step {state.step + 1} of a bounded run. Use an available tool if action 
             except Exception as exc:
                 return error_text(exc, operation="create task")
         self.last_task_id = task_id
+
+        cancelled = self._cancelled(task_id, task, state)
+        if cancelled:
+            return cancelled
+
+
         self.plan = make_plan(task)
         self._platform_info = detect_platform()
         tools = tools_for_task(task, settings.task_tool_filtering, self._platform_info)
@@ -306,9 +315,14 @@ This is step {state.step + 1} of a bounded run. Use an available tool if action 
             state.add("assistant", {"text": result.get("text", ""), "tool_calls": result.get("tool_calls", [])})
             if isinstance(result, dict) and "usage" in result:
                 u = result["usage"]
-                self.last_task_tokens["prompt"] += u.get("prompt_tokens", 0)
-                self.last_task_tokens["candidates"] += u.get("candidates_tokens", 0)
-                self.last_task_tokens["total"] += u.get("total_tokens", 0)
+                p_tokens = u.get("prompt_tokens", 0)
+                c_tokens = u.get("candidates_tokens", 0)
+                # In multi-turn chat, prompt_tokens represents the cumulative context of that turn.
+                # Use peak context for prompt size and sum generated output tokens:
+                self.last_task_tokens["prompt"] = max(self.last_task_tokens.get("prompt", 0), p_tokens)
+                self.last_task_tokens["candidates"] += c_tokens
+                self.last_task_tokens["total"] = self.last_task_tokens["prompt"] + self.last_task_tokens["candidates"]
+                self.last_task_tokens["api_billed"] = self.last_task_tokens.get("api_billed", 0) + u.get("total_tokens", 0)
             if result.get("type") == "error":
                 text = str(result.get("text") or "The model request failed.")
                 self._save(task_id, task, "failed", state)

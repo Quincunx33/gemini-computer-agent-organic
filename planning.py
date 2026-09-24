@@ -29,13 +29,13 @@ def make_plan(task: str) -> TaskPlan:
     """Universal AI-driven plan without language-biased keyword hardcoding."""
     text = (task or "").strip()
     steps = [
-        "Analyze user request and inspect workspace state",
+        "Understand user intent and determine necessary actions",
         "Execute required operations (create, patch, run, or inspect based on intent)",
         "Verify results with tests/syntax checks and confirm acceptance criteria"
     ]
     criteria = [
         "The user's goal is fully and accurately accomplished",
-        "Every change is supported by observed tool verification",
+        "Any workspace change or command execution is verified for correctness",
         "No unverified assumptions or ungrounded claims"
     ]
     return TaskPlan(text, steps, criteria)

@@ -42,5 +42,18 @@ class AgentTests(unittest.TestCase):
         self.assertIn("Action loop detected", res)
         self.assertLessEqual(client.count, 5)
 
+    def test_autonomous_conversational_response(self):
+        class DirectTextClient:
+            def generate(self, prompt, tools=None, history=None, cancel_event=None):
+                self.prompt = prompt
+                return {"type": "text", "text": "Hello! How can I help you?", "usage": {"prompt_tokens": 450, "candidates_tokens": 20, "total_tokens": 470}}
+
+        client = DirectTextClient()
+        loop = AgentLoop(client, output=lambda _val: None)
+        reply = loop.run("hi")
+        self.assertEqual(reply, "Hello! How can I help you?")
+        self.assertIn("Tool Usage Rule", client.prompt)
+        self.assertEqual(loop.last_task_tokens["total"], 470)
+
 if __name__ == "__main__":
     unittest.main()

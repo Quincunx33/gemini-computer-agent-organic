@@ -59,8 +59,12 @@ def tools_for_task(task: str, enabled: bool = False, platform_info=None) -> list
     supported = supported_tool_names(platform_info)
 
     if getattr(settings, "pure_primitives_only", True):
-        # Pure autonomous mode: Only universal core primitives!
-        # The AI decides how to use terminal/python/files freely without bloated hardcoded tools.
-        return [tool for tool in TOOLS if tool["name"] in CORE_PRIMITIVE_NAMES and tool["name"] in supported]
+        # Pure autonomous mode: Only essential primitives!
+        # Do not include inspect_image unless the task actually mentions visual/image content:
+        primitives = {"run_command", "read_file", "write_file", "patch_file"}
+        t_low = (task or "").lower()
+        if any(w in t_low for w in ["image", "photo", "picture", "screenshot", "png", "jpg", "jpeg", "img"]):
+            primitives.add("inspect_image")
+        return [tool for tool in TOOLS if tool["name"] in primitives and tool["name"] in supported]
 
     return [tool for tool in TOOLS if tool["name"] in supported]
