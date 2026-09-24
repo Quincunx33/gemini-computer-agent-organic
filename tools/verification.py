@@ -1,11 +1,8 @@
 import py_compile
 from pathlib import Path
-
 from tools.filesystem import safe_path
 
-
 def verify_python(path: str) -> dict:
-    """Compile a workspace Python file without leaving bytecode in the project."""
     target = safe_path(path)
     if target.suffix != ".py":
         return {"valid": False, "error": "verify_python requires a .py file"}

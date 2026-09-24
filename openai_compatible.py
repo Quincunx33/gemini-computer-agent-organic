@@ -31,11 +31,7 @@ class OpenAICompatibleClient:
         return bool(self.api_key)
 
     def set_task_route(self, task: str) -> None:
-        text = (task or "").lower()
-        if any(word in text for word in ("status", "list", "read", "inspect", "check", "show")):
-            fast = {"openai": "gpt-5.6-luna", "xai": "grok-4.6", "deepseek": "deepseek-flash"}.get(self.provider)
-            if fast:
-                self.models = tuple(dict.fromkeys((fast, self.model, *self.models)))
+        pass
 
     @staticmethod
     def _messages(prompt: str, history: list | None) -> list[dict[str, Any]]:

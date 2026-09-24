@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-import re
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen

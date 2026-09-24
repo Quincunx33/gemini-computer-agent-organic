@@ -1,14 +1,33 @@
+# Environment & Secrets
 .env
-.venv/
+*.env
+*.pem
+*.key
+*.token
+
+# Python cache & bytecode
 __pycache__/
-.pytest_cache/
+*.py[cod]
+*$py.class
 *.pyc
 
-# Local runtime state and private command/audit data
-*.sqlite
+# Local databases & logs
 *.sqlite3
+*.sqlite
 *.db
-*.jsonl
 *.log
-command-history*
-commands/
+agent.log
+
+# Agent checkpoints & backups
+.agent_checkpoints/
+.agent_backups/
+.agent_tasks/
+tasks_queue.json
+
+# Operating System & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.bak

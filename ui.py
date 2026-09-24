@@ -14,6 +14,7 @@ _LABELS = {
     "list_directory": "Listing files and folders",
     "read_file": "File read",
     "write_file": "Writing file",
+    "patch_file": "Patching file section",
     "create_file": "Creating file",
     "move_file": "Moving file",
     "delete_file": "Deleting file",
@@ -31,6 +32,7 @@ _LABELS = {
     "gui_capabilities": "Checking GUI capabilities",
     "screenshot": "Taking screenshot",
     "ocr": "Reading text from screenshot",
+    "inspect_image": "Visually analyzing image",
     "mouse_click": "Clicking on screen",
     "type_text": "Typing text",
     "press_key": "Pressing key",
@@ -61,7 +63,6 @@ def _clean(value: Any, limit: int = 700) -> str:
 
 
 def format_response(value: Any) -> str:
-    """Turn model Markdown/JSON-ish output into readable terminal text."""
     text = str(value or "").strip()
     if text.startswith("{"):
         try:
@@ -70,7 +71,7 @@ def format_response(value: Any) -> str:
                 text = encoded["text"]
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
-    text = text.replace("\\n", "\n").replace("\\\"", '"')
+    text = text.replace("\\n", "\n").replace('\\"', '"')
     text = re.sub(r"\*\*(.*?)\*\*", r"\1", text, flags=re.DOTALL)
     text = re.sub(r"`([^`]+)`", r"\1", text)
     text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
@@ -85,8 +86,6 @@ def _width() -> int:
 
 
 class EventRenderer:
-    """Render compact, professional execution events without third-party UI libraries."""
-
     def __init__(self, debug: bool = False, color: bool | None = None):
         self.debug = debug
         self.theme = _Theme(color)
@@ -104,7 +103,7 @@ class EventRenderer:
             return self._debug("tool_start", tool=name, args=redact_secrets(json.dumps(args, ensure_ascii=False, default=str)))
         label = _LABELS.get(name, f"Running {name}")
         detail = ""
-        if name in {"read_file", "write_file", "create_file", "self_update", "list_directory", "screenshot", "ocr"}:
+        if name in {"read_file", "write_file", "patch_file", "create_file", "self_update", "list_directory", "screenshot", "ocr"}:
             detail = f" · {_clean(args.get('path', args.get('target', '.')), 420)}"
         elif name == "run_command":
             detail = f" · {_clean(args.get('command', ''), 420)}"
@@ -125,7 +124,11 @@ class EventRenderer:
             return self._debug("tool_result", tool=name, duration_ms=round(duration_ms, 1), result=redact_secrets(json.dumps(result, ensure_ascii=False, default=str))[:2000])
         if isinstance(result, dict) and result.get("error"):
             code = result.get("code", "UNKNOWN")
-            return f"  {self.theme.paint(self.theme.red, 'X')} {name} {self.theme.paint(self.theme.gray, f'[{code}]')} - {_clean(result.get('error'))}"
+            out = f"  {self.theme.paint(self.theme.red, 'X')} {name} {self.theme.paint(self.theme.gray, f'[{code}]')} - {_clean(result.get('error'))}"
+            if result.get("suggestion"):
+                suggestion_text = _clean(result.get("suggestion"))
+                out += "\n    " + self.theme.paint(self.theme.yellow, "-> Suggestion: ") + suggestion_text
+            return out
         summary = "Completed"
         if name == "read_file":
             summary = "File read"

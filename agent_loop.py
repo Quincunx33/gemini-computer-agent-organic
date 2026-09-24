@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 import threading
+import sys
 from typing import Any
 
 from config import settings
@@ -15,10 +16,11 @@ from planner import tools_for_task
 from state import AgentState
 from task_store import TaskStore
 from tools.terminal import run_command
-from tools.filesystem import read_file, write_file, create_file, move_file, delete_file, list_directory
+from tools.filesystem import read_file, write_file, patch_file, create_file, move_file, delete_file, list_directory
 from tools.verification import verify_python
 from tools.control import platform_info, open_app, list_processes, terminate_process
 from tools.gui_control import gui_capabilities, screenshot, ocr, mouse_click, type_text, press_key
+from tools.vision import inspect_image
 from tools.self_update import self_update
 from text_safety import safe_text, safe_value
 from platform_support import command_environment, detect as detect_platform, supported_tool_names, tool_support
@@ -27,7 +29,7 @@ from skill_registry import SkillRegistry
 from ui import EventRenderer
 from approval import ApprovalBroker
 from tool_validation import validate_tool_args
-from planning import make_plan, as_prompt
+from planning import make_plan, as_prompt, TaskPlan
 from checkpoints import checkpoint
 from tools.filesystem import safe_path
 from tools.fallbacks import find_alternatives, verify_tool, install_and_verify
@@ -41,9 +43,7 @@ log = get_logger("genagent.loop")
 
 
 class AgentLoop:
-    """Bounded observe-plan-act-verify loop with recoverable failure boundaries."""
-
-    def __init__(self, client=None, output=print, store=None, memory=None, debug=None):
+    def __init__(self, client=None, output=print, store=None, memory=None, debug=None, non_interactive=False):
         self.client = client or build_llm_client()
         self.output = output
         self.store = store or TaskStore(settings.db_path)
@@ -52,11 +52,11 @@ class AgentLoop:
         self.ui = EventRenderer(settings.debug_mode if debug is None else debug)
         self.cancel_event = threading.Event()
         self.approvals = ApprovalBroker()
-        self.plan = None
+        self.plan: TaskPlan | None = None
         self.last_task_id: str | None = None
+        self.non_interactive = non_interactive
 
     def cancel(self) -> None:
-        """Request a cooperative stop at the next safe boundary."""
         self.cancel_event.set()
 
     def _cancelled(self, task_id: str, task: str, state: AgentState) -> str | None:
@@ -72,7 +72,6 @@ class AgentLoop:
         try:
             self.store.save(task_id, task, status, state.step, state.history)
         except Exception as exc:
-            # Persistence must not hide the original task result.
             log.error("task persistence failed status=%s error=%s", status, error_text(exc, operation="task persistence"), exc_info=True)
 
     def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -92,17 +91,20 @@ class AgentLoop:
         supported, reason = tool_support(name)
         if not supported:
             return {"error": f"Tool '{name}' is unavailable on this platform: {reason}", "code": "UNSUPPORTED_PLATFORM", "platform": detect_platform().profile}
-        if settings.dry_run and name in {"run_command", "write_file", "create_file", "move_file", "delete_file", "self_update", "open_app", "terminate_process", "mouse_click", "type_text", "press_key"}:
+        if settings.dry_run and name in {"run_command", "write_file", "patch_file", "create_file", "move_file", "delete_file", "self_update", "open_app", "terminate_process", "mouse_click", "type_text", "press_key"}:
             return {"dry_run": True, "tool": name, "args": redact_secrets(json.dumps(args, ensure_ascii=False, default=str)), "message": "No side effect executed because AGENT_DRY_RUN=true"}
 
         requires_confirm = settings.require_confirmation
-        if settings.autonomy_mode == "safe" and name not in {"list_skills", "find_alternatives", "verify_tool", "search_web", "parallel_analysis", "verify_project", "preview_diff", "list_directory", "read_file", "platform_info", "gui_capabilities"}:
+        if settings.autonomy_mode == "safe" and name not in {"list_skills", "find_alternatives", "verify_tool", "search_web", "parallel_analysis", "verify_project", "preview_diff", "list_directory", "read_file", "platform_info", "gui_capabilities", "inspect_image"}:
             requires_confirm = True
-        elif settings.autonomy_mode == "trusted" and name in {"write_file", "create_file", "move_file", "self_update", "git_checkpoint"}:
-            requires_confirm = False
-        if name == "delete_file":
+        elif settings.autonomy_mode == "trusted":
+            if name in {"write_file", "patch_file", "create_file", "move_file", "self_update", "git_checkpoint"}:
+                requires_confirm = False
+            elif name == "run_command" and classify_command(str(args.get("command", ""))) != Risk.DESTRUCTIVE:
+                requires_confirm = False
+        if name in {"delete_file", "terminate_process"}:
             requires_confirm = True
-        if name in {"list_skills", "find_alternatives", "verify_tool", "search_web", "parallel_analysis", "verify_project", "preview_diff", "list_directory", "read_file", "platform_info", "gui_capabilities"}:
+        if name in {"list_skills", "find_alternatives", "verify_tool", "verify_python", "search_web", "parallel_analysis", "verify_project", "preview_diff", "list_directory", "read_file", "platform_info", "gui_capabilities", "inspect_image"}:
             requires_confirm = False
         elif name == "run_command" and classify_command(str(args.get("command", ""))) == Risk.NORMAL:
             requires_confirm = False
@@ -111,10 +113,18 @@ class AgentLoop:
             approval = self.approvals.create(name, args)
             self.output(safe_text(f"  Approval ID: {approval.approval_id}" if self.ui.debug else ""))
             self.output(safe_text(self.ui.permission(name, args)))
+            if self.non_interactive:
+                self.approvals.resolve(approval.approval_id, False)
+                return {"error": "Permission denied: non-interactive mode cannot prompt user for tool: " + name, "code": "PERMISSION_DENIED_HEADLESS"}
             try:
                 confirm = input("Allow execution? [y/N]: ").strip().lower()
-            except (EOFError, KeyboardInterrupt) as exc:
-                raise AgentError("CONFIRMATION_UNAVAILABLE", "User confirmation was interrupted", "User confirmation was not available.", False, 409) from exc
+            except (EOFError, KeyboardInterrupt):
+                if settings.autonomy_mode == "trusted":
+                    self.approvals.resolve(approval.approval_id, True)
+                    confirm = "y"
+                else:
+                    self.approvals.resolve(approval.approval_id, False)
+                    return {"error": "User confirmation was interrupted or unavailable", "code": "PERMISSION_DENIED"}
             if confirm not in {"y", "yes"}:
                 self.approvals.resolve(approval.approval_id, False)
                 return {"error": "Permission denied by user for tool: " + name, "code": "PERMISSION_DENIED"}
@@ -128,6 +138,7 @@ class AgentLoop:
             "run_command": lambda: run_command(command=args.get("command"), cwd=args.get("cwd"), timeout=args.get("timeout"), approved=not requires_confirm),
             "read_file": lambda: {"content": read_file(args["path"])},
             "write_file": lambda: {"checkpoint": str(checkpoint(safe_path(args["path"]), settings.workspace) or ""), "written": write_file(args["path"], args["content"])},
+            "patch_file": lambda: {"checkpoint": str(checkpoint(safe_path(args["path"]), settings.workspace) or ""), "patched": patch_file(args["path"], args["search"], args["replace"], args.get("count", 1))},
             "create_file": lambda: {"created": create_file(args["path"], args["content"])},
             "move_file": lambda: {"moved": move_file(args["source"], args["destination"])},
             "delete_file": lambda: {"deleted": delete_file(args["path"], approved=True)},
@@ -136,6 +147,17 @@ class AgentLoop:
             "verify_python": lambda: verify_python(args["path"]),
             "verify_tool": lambda: verify_tool(args["requested"]),
             "install_and_verify": lambda: install_and_verify(args["requested"]),
+            "install_package": lambda: __import__("tools.fallbacks", fromlist=["install_package"]).install_package(args["package"], args.get("manager", "auto")),
+            "inspect_code": lambda: __import__("tools.code_intel", fromlist=["inspect_code"]).inspect_code(args["path"], args.get("symbol")),
+            "create_snapshot": lambda: __import__("tools.snapshot", fromlist=["create_snapshot"]).create_snapshot(args.get("label", "")),
+            "restore_snapshot": lambda: __import__("tools.snapshot", fromlist=["restore_snapshot"]).restore_snapshot(args["snapshot_id"]),
+            "create_skill": lambda: __import__("skill_registry", fromlist=["create_skill"]).create_skill(args["name"], args["description"], args["instructions"]),
+            "synthesize_tool": lambda: __import__("tools.tool_synthesis", fromlist=["synthesize_tool"]).synthesize_tool(args["name"], args["code"], args.get("test_code"), args.get("description", "")),
+            "execute_synthesized_tool": lambda: __import__("tools.tool_synthesis", fromlist=["execute_synthesized_tool"]).execute_synthesized_tool(args["name"], args["function"], args.get("args")),
+            "analyze_logs": lambda: __import__("tools.log_analyzer", fromlist=["analyze_logs"]).analyze_logs(args.get("log_text"), args.get("path"), args.get("max_lines", 50)),
+            "check_port": lambda: __import__("tools.watchdog", fromlist=["check_port"]).check_port(args.get("host", "127.0.0.1"), args["port"], args.get("timeout", 2.0)),
+            "check_process_resources": lambda: __import__("tools.watchdog", fromlist=["check_process_resources"]).check_process_resources(args.get("pid")),
+            "preview_impact": lambda: __import__("tools.safety_preview", fromlist=["preview_impact"]).preview_impact(args.get("command"), args.get("tool"), args.get("args")),
             "search_web": lambda: search_web(args["query"], args.get("limit", 5)),
             "install_plugin": lambda: PluginManager().install_zip(args["archive"]),
             "parallel_analysis": lambda: __import__("subagents").run_parallel(args["tasks"], min(args.get("max_workers", settings.max_parallel_agents), settings.max_parallel_agents)),
@@ -151,6 +173,7 @@ class AgentLoop:
             "gui_capabilities": gui_capabilities,
             "screenshot": lambda: screenshot(args.get("path", "screen.png")),
             "ocr": lambda: ocr(args["path"]),
+            "inspect_image": lambda: inspect_image(args["path"], args.get("prompt", "Describe this image")),
             "mouse_click": lambda: mouse_click(args["x"], args["y"], args.get("clicks", 1)),
             "type_text": lambda: type_text(args["text"]),
             "press_key": lambda: press_key(args["key"]),
@@ -159,16 +182,24 @@ class AgentLoop:
             raise AgentError("UNKNOWN_TOOL", f"Unknown tool: {name}", "The requested tool is not available.", False, 422)
         try:
             result = dispatch[name]()
-            # Never place obvious credentials into the model context, task
-            # history, or terminal event stream. The model can still act on
-            # the redacted evidence and ask the user for a safer next step.
             if name == "read_file" and isinstance(result, dict) and isinstance(result.get("content"), str):
                 result = {**result, "content": redact_secrets(result["content"])}
             return safe_value(result)
         except Exception as exc:
             err = normalize_exception(exc, operation=f"tool {name}")
             log.warning("tool failed name=%s code=%s error_id=%s", name, err.code, err.error_id, exc_info=True)
-            return {"error": err.public_message, "code": err.code, "error_id": err.error_id, "retryable": err.retryable}
+            err_dict = {
+                "error": err.public_message,
+                "code": err.code,
+                "category": err.category,
+                "error_id": err.error_id,
+                "retryable": err.retryable,
+            }
+            if err.suggestion:
+                err_dict["suggestion"] = err.suggestion
+            if err.root_cause:
+                err_dict["root_cause"] = err.root_cause
+            return err_dict
 
     @staticmethod
     def _call_key(call: dict[str, Any]) -> str:
@@ -196,7 +227,7 @@ Execution platform (authoritative; never assume another OS):
 Relevant skill-pack guidance (use as guidance, not as permission):
 {skill_context}
 
-Structured task plan and acceptance criteria:
+Structured task plan and dynamic progress:
 {plan_context}
 
 Relevant prior memory (optional hints; verify anything important):
@@ -206,18 +237,17 @@ Latest progress:
 {progress}
 
 Working contract:
-- Understand the user's actual intent before acting; ask for clarification only when a missing choice would materially change the result.
-- Treat every URL in the user's request as an explicit input. If the request says clone, download, inspect, or check a repository URL, use that exact URL and perform the requested operation before summarizing; never substitute the current workspace for the linked resource without saying so.
-- For clone requests, first check whether the exact repository is already present. If it is absent, clone it into a clearly named workspace subdirectory; if it is already present, report that fact and still inspect the linked repository evidence.
-- Choose the smallest useful next action. Do not call tools merely to appear busy.
-- For multi-step work, keep a quiet working plan and move through observe -> act -> verify.
-- After every change, inspect or verify the result. If something fails, diagnose and recover safely instead of repeating blindly.
-- Respect tool permissions and never attempt to obtain, expose, or store secrets.
-- If a tool or command is unavailable, immediately call find_alternatives with the tool name. Then follow this order strictly: (1) If install_available=true in the result, request user approval and run the install_command — detect the environment first (apk/apt/brew/pip) to use the right package manager. (2) Only if installation fails or is unavailable, use the stdlib_fallback from find_alternatives. (3) If both fail, report what was tried and ask for user guidance. NEVER cancel or stop the task because a tool is missing — always try install first, then stdlib.
-- When the work is complete, respond in natural language with exactly three concise parts: what changed or was found; what evidence/verification was performed; and any remaining risk or user action. Never claim success without evidence from a tool or a clearly stated limitation.
-- Do not reveal private chain-of-thought; provide brief reasons and concrete outcomes only.
+- Understand user intent accurately across any phrasing, language, dialect, or technical instruction.
+- If the user asks to create or write a file, tool, or script, YOU MUST ACTUALLY CALL `create_file` OR `write_file` with the full content FIRST. DO NOT call `verify_python` before creating the file!
+- NEVER hallucinate or claim a file/directory was created unless a tool actually succeeded in creating it in this run. If `verify_python` or `list_directory` reports 'No such file or directory' or 'NOT_FOUND', it does NOT exist! Immediately call `create_file` to create it.
+- Choose the smallest useful next action. Prefer `patch_file` for targeted edits.
+- After every change, verify the result.
+- When complete, respond with exactly three concise parts:
+  1. What changed or was found
+  2. What evidence/verification was performed
+  3. Any remaining risk or user action.
 
-        This is step {state.step + 1} of a bounded run. Use an available tool if action is needed; otherwise give the final answer."""
+This is step {state.step + 1} of a bounded run. Use an available tool if action is needed; otherwise give the final answer."""
         return prompt[:settings.max_prompt_chars]
 
     def run(self, task: str, task_id: str | None = None) -> str:
@@ -246,8 +276,12 @@ Working contract:
         previous_result: str | None = None
         recent_calls: list[str] = []
         seen_results: dict[str, str] = {}
-        for _ in range(settings.max_agent_steps):
+        consecutive_no_progress = 0
+        self.last_task_tokens = {"prompt": 0, "candidates": 0, "total": 0}
+        for step_idx in range(settings.max_agent_steps):
             state.step += 1
+            if step_idx > 0:
+                time.sleep(max(0.15, settings.gemini_min_interval))
             cancelled = self._cancelled(task_id, task, state)
             if cancelled:
                 return cancelled
@@ -255,7 +289,6 @@ Working contract:
             try:
                 result = self.client.generate(self._prompt(task, state, previous_result), tools, state.history, cancel_event=self.cancel_event)
             except TypeError:
-                # Backward compatibility for simple fake/integrated clients.
                 result = self.client.generate(self._prompt(task, state, previous_result), tools, state.history)
             except KeyboardInterrupt:
                 self.cancel_event.set()
@@ -271,6 +304,11 @@ Working contract:
                 self._save(task_id, task, "failed", state)
                 return f"{err.public_message} (error_id={err.error_id}, task_id={task_id})"
             state.add("assistant", {"text": result.get("text", ""), "tool_calls": result.get("tool_calls", [])})
+            if isinstance(result, dict) and "usage" in result:
+                u = result["usage"]
+                self.last_task_tokens["prompt"] += u.get("prompt_tokens", 0)
+                self.last_task_tokens["candidates"] += u.get("candidates_tokens", 0)
+                self.last_task_tokens["total"] += u.get("total_tokens", 0)
             if result.get("type") == "error":
                 text = str(result.get("text") or "The model request failed.")
                 self._save(task_id, task, "failed", state)
@@ -283,6 +321,9 @@ Working contract:
                 text = str(result.get("text", "")).strip() or "I could not produce a useful final summary."
                 self._save(task_id, task, "completed", state)
                 self.memory.save("completed_task", {"task": task, "summary": text})
+                if self.last_task_tokens["total"] > 0:
+                    tok_msg = f"  [Tokens] {self.last_task_tokens['total']:,} tokens (Prompt: {self.last_task_tokens['prompt']:,} · Output: {self.last_task_tokens['candidates']:,})"
+                    self.output(safe_text(self.ui.theme.paint(self.ui.theme.gray, tok_msg)))
                 return text
 
             if not isinstance(calls, list):
@@ -298,12 +339,29 @@ Working contract:
                     tool_results.append({"error": "Invalid tool call", "code": "INVALID_TOOL_CALL"})
                     continue
                 key = self._call_key(call)
-                recent_calls = (recent_calls + [key])[-4:]
-                if len(recent_calls) >= 3 and len(set(recent_calls[-3:])) == 1:
+                recent_calls = (recent_calls + [key])[-8:]
+                is_repetition = (len(recent_calls) >= 3 and len(set(recent_calls[-3:])) == 1)
+                if not is_repetition and len(recent_calls) >= 4:
+                    if recent_calls[-1] == recent_calls[-3] and recent_calls[-2] == recent_calls[-4]:
+                        is_repetition = True
+                    elif recent_calls[-6:].count(key) >= 3:
+                        is_repetition = True
+
+                if is_repetition:
+                    consecutive_no_progress += 1
                     message = {"error": "The same tool call was requested repeatedly without progress. Choose a different safe approach or explain the blocker.", "code": "NO_PROGRESS"}
+                    if self.plan:
+                        self.plan.record_failure_and_replan(f"Repeated tool {call.get('name')}", "Repeated identical or cyclic call with no progress")
                     self.output(safe_text(self.ui.result("recovery", message, 0)))
+                    if consecutive_no_progress >= 2:
+                        blocker_msg = "Action loop detected: Unable to complete operation after repeated attempts without progress. Please provide specific file names, exact paths, or check command arguments."
+                        self._save(task_id, task, "paused", state)
+                        self.output(safe_text(blocker_msg))
+                        return blocker_msg
                     tool_results.append(message)
                     continue
+                else:
+                    consecutive_no_progress = 0
                 name, args = call.get("name", ""), call.get("args", {})
                 self.output(safe_text(self.ui.start(name, args)))
                 started = time.perf_counter()
@@ -314,6 +372,14 @@ Working contract:
                     return self._cancelled(task_id, task, state) or "Task cancelled."
                 tool_result = safe_value(tool_result)
                 self.output(safe_text(self.ui.result(name, tool_result, (time.perf_counter() - started) * 1000)))
+                
+                # Check for error and update dynamic plan
+                if isinstance(tool_result, dict) and tool_result.get("error"):
+                    if self.plan:
+                        self.plan.record_failure_and_replan(f"Tool {name}", str(tool_result.get("error")))
+                elif self.plan:
+                    self.plan.mark_completed(f"Used {name}")
+
                 if name in {"find_alternatives", "verify_tool", "install_and_verify", "search_web"}:
                     self.memory.save("tool_outcome", {"tool": name, "args": redact_secrets(json.dumps(args, ensure_ascii=False)), "result": tool_result})
                 result_key = json.dumps(tool_result, sort_keys=True, ensure_ascii=False, default=str)

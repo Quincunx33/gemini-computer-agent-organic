@@ -27,7 +27,7 @@ class TaskController:
     def _run(self, task: str) -> None:
         try:
             self.result = self.loop.run(task)
-            self.status = "cancelled" if "cancelled" in self.result.lower() else "completed"
+            self.status = "cancelled" if "cancelled" in str(self.result).lower() else "completed"
         except Exception as exc:
             self.result = str(exc)
             self.status = "failed"

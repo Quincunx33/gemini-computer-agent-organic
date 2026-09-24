@@ -8,7 +8,7 @@ from permissions import Risk, classify_command
 
 
 class ReadOnlyAgentLoop(AgentLoop):
-    _BLOCKED = {"write_file", "create_file", "move_file", "delete_file", "self_update", "open_app", "terminate_process", "mouse_click", "type_text", "press_key"}
+    _BLOCKED = {"write_file", "patch_file", "create_file", "move_file", "delete_file", "self_update", "open_app", "terminate_process", "mouse_click", "type_text", "press_key"}
 
     def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         if name in self._BLOCKED:
@@ -27,7 +27,10 @@ def run_parallel(tasks: list[str], max_workers: int = 3) -> dict[str, Any]:
     results: list[dict[str, Any] | None] = [None] * len(tasks)
 
     def run_one(index: int, task: str) -> dict[str, Any]:
-        loop = ReadOnlyAgentLoop(output=lambda _event: None)
+        from gemini_client import GeminiClient
+        from config import settings
+        fast_client = GeminiClient(model=settings.fast_model)
+        loop = ReadOnlyAgentLoop(client=fast_client, output=lambda _event: None)
         try:
             return {"index": index, "task": task, "ok": True, "summary": loop.run("Read-only analysis only: " + task)}
         except Exception as exc:

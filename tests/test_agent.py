@@ -1,8 +1,6 @@
 import unittest
 from unittest.mock import patch
-
 from agent_loop import AgentLoop
-
 
 class FakeClient:
     def __init__(self):
@@ -11,7 +9,6 @@ class FakeClient:
     def generate(self, *args, **kwargs):
         self.calls += 1
         return {"type": "text", "text": "done", "tool_calls": []}
-
 
 class AgentTests(unittest.TestCase):
     def test_loop(self):
@@ -31,6 +28,19 @@ class AgentTests(unittest.TestCase):
         prompt.assert_called_once()
         terminate.assert_called_once_with(1234, approved=True)
 
+    def test_circuit_breaker_stops_infinite_loop(self):
+        class LoopingClient:
+            def __init__(self):
+                self.count = 0
+            def generate(self, prompt, tools=None, history=None, cancel_event=None):
+                self.count += 1
+                return {"type": "tool_call", "text": "", "tool_calls": [{"name": "list_directory", "args": {"path": "workflow"}}]}
+
+        client = LoopingClient()
+        loop = AgentLoop(client, output=lambda _value: None)
+        res = loop.run("test loop breaker")
+        self.assertIn("Action loop detected", res)
+        self.assertLessEqual(client.count, 5)
 
 if __name__ == "__main__":
     unittest.main()

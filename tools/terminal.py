@@ -35,10 +35,10 @@ def _platform_command_error(command: str) -> dict | None:
     info = detect()
     first = command.strip().lower()
     if info.profile == "windows" and re.match(r"^(bash|sh|zsh|ls|grep|sed|awk|cat|pwd)(\s|$)", first):
-        return {"code": "UNSUPPORTED_PLATFORM", "message": "POSIX/Linux command rejected on Windows; use cmd.exe or PowerShell syntax", "platform": info.profile}
-    if info.profile in {"linux", "termux", "ios_shell", "macos"} and re.match(r"^(cmd|powershell|pwsh|get-childitem|get-content)(\s|$)", first):
-        return {"code": "UNSUPPORTED_PLATFORM", "message": "Windows command rejected on a POSIX/iOS shell; use a supported shell command", "platform": info.profile}
-    if info.profile in {"linux", "termux", "ios_shell", "macos"} and re.match(r"^[a-z]:[\\/]", first):
+        return {"code": "UNSUPPORTED_PLATFORM", "message": "POSIX/Linux command rejected on Windows", "platform": info.profile}
+    if info.profile in {"linux", "termux", "ios_shell", "ish", "macos"} and re.match(r"^(cmd|powershell|pwsh|get-childitem|get-content)(\s|$)", first):
+        return {"code": "UNSUPPORTED_PLATFORM", "message": "Windows command rejected on a POSIX/iOS shell", "platform": info.profile}
+    if info.profile in {"linux", "termux", "ios_shell", "ish", "macos"} and re.match(r"^[a-z]:[\\/]", first):
         return {"code": "UNSUPPORTED_PLATFORM", "message": "Windows path rejected on a POSIX/iOS shell", "platform": info.profile}
     return None
 
@@ -69,6 +69,22 @@ def run_command(command: str, cwd: Optional[str] = None, timeout: Optional[int] 
                 except ValueError:
                     requested = command.strip().split()[0]
                 result["error"] = {"code": "COMMAND_NOT_FOUND", "message": f"Command unavailable: {requested}", "alternatives": find_alternatives(requested)}
+            elif process.returncode != 0 and stderr:
+                lower_err = stderr.lower()
+                if "modulenotfounderror" in lower_err or "no module named" in lower_err:
+                    mod_match = re.search(r"no module named ['\"]?([a-zA-Z0-9_.-]+)", stderr, re.I)
+                    mod = mod_match.group(1) if mod_match else "dependency"
+                    result["diagnosis"] = f"Missing module: {mod}"
+                    result["suggestion"] = f"Module '{mod}' is not available. Use Python standard library or install it."
+                elif "syntaxerror" in lower_err:
+                    result["diagnosis"] = "Python syntax error in script execution."
+                    result["suggestion"] = "Review code syntax and fix indentation or missing symbols."
+                elif "address already in use" in lower_err:
+                    result["diagnosis"] = "Network port already in use or in TIME_WAIT."
+                    result["suggestion"] = "Set allow_reuse_address=True or select an alternative port."
+                elif "permission denied" in lower_err:
+                    result["diagnosis"] = "Permission denied for command execution or file path."
+                    result["suggestion"] = "Verify path permissions or run with required privileges."
             return result
         except subprocess.TimeoutExpired as exc:
             if os.name != "nt":

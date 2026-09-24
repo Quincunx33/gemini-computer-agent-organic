@@ -21,17 +21,37 @@ class PlatformInfo:
     gui_backend: str
 
 
-_ALL_TOOLS = {"run_command", "read_file", "write_file", "create_file", "move_file", "delete_file", "self_update", "list_directory", "verify_python", "verify_tool", "find_alternatives", "install_and_verify", "search_web", "install_plugin", "parallel_analysis", "verify_project", "preview_diff", "git_checkpoint", "platform_info", "open_app", "list_processes", "terminate_process", "gui_capabilities", "screenshot", "ocr", "mouse_click", "type_text", "press_key"}
+_ALL_TOOLS = {"run_command", "read_file", "write_file", "patch_file", "create_file", "move_file", "delete_file", "self_update", "list_directory", "verify_python", "verify_tool", "find_alternatives", "install_and_verify", "install_package", "inspect_code", "create_snapshot", "restore_snapshot", "create_skill", "synthesize_tool", "execute_synthesized_tool", "analyze_logs", "check_port", "check_process_resources", "preview_impact", "search_web", "install_plugin", "parallel_analysis", "verify_project", "preview_diff", "git_checkpoint", "platform_info", "open_app", "list_processes", "terminate_process", "gui_capabilities", "screenshot", "ocr", "inspect_image", "mouse_click", "type_text", "press_key"}
 _GUI_ACTION_TOOLS = {"screenshot", "ocr", "mouse_click", "type_text", "press_key"}
 
 
 def detect() -> PlatformInfo:
+    import sys
     system = platform.system().lower()
+    release = platform.release().lower()
+    machine = platform.machine().lower()
     prefix = os.getenv("PREFIX", "")
+
+    # Termux on Android
     is_termux = bool(os.getenv("TERMUX_VERSION") or prefix.endswith("com.termux/files/usr"))
-    is_ios_shell = bool(os.getenv("A_SHELL") or os.getenv("IOS_SHELL")) or system in {"ios", "ipados"}
+
+    # iSH Shell on iOS (Alpine Linux x86 emulation on iPad/iPhone)
+    uname_ver = ""
+    if hasattr(os, "uname"):
+        try:
+            uname_ver = os.uname().version.lower()
+        except Exception:
+            pass
+    is_ish = "ish" in release or "ish" in uname_ver or os.path.exists("/proc/ish")
+
+    # a-Shell or iOS native sandbox
+    is_ashell = bool(os.getenv("A_SHELL") or os.getenv("IOS_SHELL") or "a-shell" in os.getenv("PATH", "").lower() or "a-shell" in sys.executable.lower())
+    is_ios_shell = is_ashell or is_ish or system in {"ios", "ipados"} or (system == "darwin" and ("ipad" in machine or "iphone" in machine))
+
     has_display = bool(os.getenv("DISPLAY") or os.getenv("WAYLAND_DISPLAY"))
-    if is_ios_shell:
+    if is_ish:
+        profile, shell_family, backend = "ish", "posix-shell", "ish-alpine"
+    elif is_ios_shell:
         profile, shell_family, backend = "ios_shell", "ios-shell", "ios-shell"
     elif is_termux:
         profile, shell_family, backend = "termux", "posix-shell", "termux-shell"
@@ -52,6 +72,8 @@ def supported_tool_names(info: PlatformInfo | None = None) -> set[str]:
     supported = set(_ALL_TOOLS)
     if info.profile == "ios_shell":
         supported -= {"open_app", "list_processes", "terminate_process", *_GUI_ACTION_TOOLS}
+    elif info.profile == "ish":
+        supported -= {"open_app", *_GUI_ACTION_TOOLS}
     elif info.profile == "termux":
         supported -= {"open_app", *_GUI_ACTION_TOOLS}
     elif info.profile in {"windows", "linux", "macos"}:

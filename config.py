@@ -4,7 +4,6 @@ from pathlib import Path
 
 
 def _load_dotenv(path: Path | None = None) -> None:
-    """Load simple KEY=VALUE entries without requiring python-dotenv."""
     path = path or Path(__file__).resolve().parent / ".env"
     if not path.exists():
         return
@@ -20,7 +19,7 @@ def _load_dotenv(path: Path | None = None) -> None:
         key, value = key.strip(), value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             value = value[1:-1]
-        if key and key not in os.environ:
+        if key:
             os.environ[key] = value
 
 
@@ -65,10 +64,8 @@ class Settings:
     deepseek_fallback_models: tuple[str, ...] = tuple(m.strip() for m in os.getenv("DEEPSEEK_FALLBACK_MODELS", "deepseek-v4-pro").split(",") if m.strip())
     deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
-    gemini_fallback_models: tuple[str, ...] = tuple(m.strip() for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-flash-lite-latest").split(",") if m.strip())
+    gemini_fallback_models: tuple[str, ...] = tuple(m.strip() for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash,gemini-flash-lite-latest").split(",") if m.strip())
     workspace: Path = Path(os.getenv("AGENT_WORKSPACE", str(Path.cwd()))).expanduser().resolve()
-    # Host mode permits paths outside workspace. It is opt-in because it gives
-    # the agent access to the user's wider filesystem.
     host_mode: bool = _bool_env("AGENT_HOST_MODE", False)
     allowed_paths: str = os.getenv("AGENT_ALLOWED_PATHS", "")
     denied_paths: str = os.getenv("AGENT_DENIED_PATHS", "")
@@ -81,7 +78,7 @@ class Settings:
     gemini_rate_window: int = _int_env("GEMINI_RATE_WINDOW", 60, maximum=86_400)
     gemini_backoff_base: float = _float_env("GEMINI_BACKOFF_BASE", 1.0, minimum=0.1, maximum=60.0)
     gemini_backoff_max: float = _float_env("GEMINI_BACKOFF_MAX", 16.0, minimum=1.0, maximum=600.0)
-    gemini_persistent_limit: int = _int_env("GEMINI_PERSISTENT_LIMIT", 300, maximum=100_000)
+    gemini_persistent_limit: int = _int_env("GEMINI_PERSISTENT_LIMIT", 2000, maximum=100_000)
     gemini_persistent_window: int = _int_env("GEMINI_PERSISTENT_WINDOW", 86_400, maximum=7 * 86_400)
     max_agent_steps: int = _int_env("MAX_AGENT_STEPS", 50, maximum=1000)
     command_timeout: int = _int_env("COMMAND_TIMEOUT", 120, maximum=3600)
@@ -97,7 +94,8 @@ class Settings:
     response_cache_enabled: bool = _bool_env("RESPONSE_CACHE_ENABLED", True)
     response_cache_ttl: int = _int_env("RESPONSE_CACHE_TTL", 300, maximum=86_400)
     response_cache_size: int = _int_env("RESPONSE_CACHE_SIZE", 128, maximum=10_000)
-    task_tool_filtering: bool = _bool_env("TASK_TOOL_FILTERING", True)
+    task_tool_filtering: bool = _bool_env("TASK_TOOL_FILTERING", False)
+    pure_primitives_only: bool = _bool_env("PURE_PRIMITIVES_ONLY", True)
     fast_model: str = os.getenv("GEMINI_FAST_MODEL", "gemini-flash-lite-latest")
     log_rotate_hours: float = _float_env("LOG_ROTATE_HOURS", 24.0, minimum=1.0, maximum=24 * 30)
     log_retention: int = _int_env("LOG_RETENTION", 7, maximum=365)
@@ -117,4 +115,18 @@ class Settings:
 
 settings = Settings()
 
-__all__ = ["Settings", "settings"]
+
+def is_configured() -> bool:
+    """Check if any valid LLM provider API key is configured."""
+    return bool(settings.gemini_api_key or settings.openai_api_key or settings.xai_api_key or settings.deepseek_api_key)
+
+
+def reload_settings() -> Settings:
+    """Reload configuration from .env and return fresh settings instance."""
+    global settings
+    _load_dotenv()
+    settings = Settings()
+    return settings
+
+
+__all__ = ["Settings", "settings", "is_configured", "reload_settings"]

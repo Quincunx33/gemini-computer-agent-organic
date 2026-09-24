@@ -13,7 +13,6 @@ from tools.filesystem import safe_path
 
 
 def self_update(path: str, content: str) -> dict[str, Any]:
-    """Atomically update a workspace file and roll back Python syntax failures."""
     target = safe_path(path)
     if len(content.encode("utf-8")) > settings.max_file_size:
         return {"ok": False, "error": "Content exceeds MAX_FILE_SIZE"}

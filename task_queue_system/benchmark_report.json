@@ -1,0 +1,18 @@
+{
+  "benchmark_timestamp": "2026-09-24T00:19:49Z",
+  "total_tasks": 50,
+  "max_workers": 4,
+  "completed": 50,
+  "failed": 0,
+  "retried": 16,
+  "total_duration_sec": 0.3118,
+  "throughput_tasks_per_sec": 160.35,
+  "latency_stats": {
+    "avg_ms": 1.1,
+    "min_ms": 0.1,
+    "p50_ms": 0.67,
+    "p95_ms": 2.71,
+    "max_ms": 3.1
+  },
+  "success_rate_percent": 100.0
+}

@@ -9,8 +9,6 @@ from typing import Any
 
 
 class TaskStore:
-    """Small SQLite repository with explicit timeouts and defensive decoding."""
-
     def __init__(self, path: Path):
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)

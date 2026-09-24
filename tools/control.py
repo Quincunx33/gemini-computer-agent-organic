@@ -16,7 +16,6 @@ def platform_info() -> dict[str, Any]:
 
 
 def open_app(target: str) -> dict[str, Any]:
-    """Open a URL or application using the host OS launcher."""
     info = detect()
     supported, reason = tool_support("open_app", info)
     if not supported:

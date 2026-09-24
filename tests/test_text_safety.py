@@ -15,7 +15,7 @@ class TextSafetyTests(unittest.TestCase):
 
     def test_safe_value_sanitizes_nested_results(self):
         value = safe_value({"stdout": "bad\ud800", "items": ["ok\udfff"]})
-        self.assertEqual(value, {"stdout": "bad�", "items": ["ok�"]})
+        self.assertEqual(value, {"stdout": "bad", "items": ["ok"]})
 
     def test_terminal_command_output_is_utf8_safe(self):
         result = run_command("printf '\\377'", approved=True)

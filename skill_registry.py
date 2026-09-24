@@ -15,8 +15,6 @@ class Skill:
 
 
 class SkillRegistry:
-    """Discover local SKILL.md packs and select relevant guidance per task."""
-
     def __init__(self, root: Path | None = None):
         self.root = Path(root or Path(__file__).resolve().parent / "skills")
         self.skills = self._discover()
@@ -67,3 +65,17 @@ class SkillRegistry:
 
 
 __all__ = ["Skill", "SkillRegistry"]
+
+
+def create_skill(name: str, description: str, instructions: str) -> dict[str, str | bool]:
+    """Dynamically save a reusable skill pack to the agent's skills repository."""
+    clean_name = re.sub(r"[^a-zA-Z0-9_-]", "_", (name or "").strip().lower())
+    if not clean_name:
+        return {"ok": False, "error": "Invalid skill name"}
+    skill_dir = Path(__file__).resolve().parent / "skills" / clean_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    body = instructions.strip()
+    content = f"---\nname: {clean_name}\ndescription: {description.strip()}\n---\n\n{body}\n"
+    target_file = skill_dir / "SKILL.md"
+    target_file.write_text(content, encoding="utf-8")
+    return {"ok": True, "name": clean_name, "path": str(target_file)}

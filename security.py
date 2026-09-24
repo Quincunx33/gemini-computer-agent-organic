@@ -32,13 +32,6 @@ class RateLimiter:
 
 
 class AuditLogger:
-    """Thread-safe JSONL audit logger with lazy daily rotation.
-
-    Rotation happens immediately before the first write after the configured
-    interval. The current file is never deleted: it is renamed with a UTC
-    timestamp, a fresh active file is created, and old archives are pruned.
-    """
-
     def __init__(self, path: Path, rotate_hours: float | None = None, retention: int | None = None):
         self.path = Path(path).expanduser()
         self.rotate_seconds = max(3600.0, float(rotate_hours if rotate_hours is not None else settings.log_rotate_hours) * 3600)
@@ -56,7 +49,6 @@ class AuditLogger:
             except FileNotFoundError:
                 pass
             except OSError:
-                # A cleanup failure must never break the audit path.
                 continue
 
     def _rotate_if_due(self, now: float) -> None:
@@ -80,17 +72,14 @@ class AuditLogger:
         except FileNotFoundError:
             return
         except OSError:
-            # Preserve the current log if rotation is temporarily unavailable.
             return
         self._prune()
 
     def reset(self) -> None:
-        """Force a fresh active log while retaining the bounded archive history."""
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             if self.path.exists():
                 now = time.time()
-                # Make the regular rotation path produce the archive name and prune it.
                 old_mtime = self.path.stat().st_mtime
                 try:
                     os.utime(self.path, (old_mtime - self.rotate_seconds - 1, old_mtime - self.rotate_seconds - 1))
@@ -112,6 +101,4 @@ class AuditLogger:
                     stream.write(line)
                     stream.flush()
             except OSError:
-                # Do not silently lose observability: callers may continue, but
-                # the exception remains visible to the process logger if needed.
                 raise
